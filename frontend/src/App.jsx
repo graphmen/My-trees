@@ -73,8 +73,14 @@ let DefaultIcon = L.icon({
 L.Marker.prototype.options.icon = DefaultIcon;
 
 let backendUrl = import.meta.env.VITE_BACKEND_URL || "http://127.0.0.1:8282";
+if (backendUrl === "mytrees-qfield-backend") {
+  backendUrl = "mytrees-qfield-backend.onrender.com";
+}
 if (backendUrl && !backendUrl.startsWith("http://") && !backendUrl.startsWith("https://")) {
   backendUrl = `https://${backendUrl}`;
+}
+if (backendUrl === "https://mytrees-qfield-backend") {
+  backendUrl = "https://mytrees-qfield-backend.onrender.com";
 }
 const BACKEND_URL = backendUrl;
 
