@@ -3,3 +3,5 @@ uvicorn==0.30.1
 pandas
 geopandas
 shapely
+requests
+pyogrio
