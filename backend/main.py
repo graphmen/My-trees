@@ -4,6 +4,7 @@ import logging
 import threading
 import requests
 import tempfile
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -13,7 +14,15 @@ import pandas as pd
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("backend")
 
-app = FastAPI(title="MyTrees QField Restoration API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Auto-sync from QField Cloud when the server starts (background thread)."""
+    logger.info("[STARTUP] MyTrees backend starting — triggering QField Cloud auto-sync...")
+    threading.Thread(target=_startup_sync, daemon=True).start()
+    yield  # application runs here
+    logger.info("[SHUTDOWN] MyTrees backend shutting down.")
+
+app = FastAPI(title="MyTrees QField Restoration API", lifespan=lifespan)
 
 # Enable CORS for frontend integration
 app.add_middleware(
@@ -2767,8 +2776,13 @@ def run_background_sync(cfg, headers, url, project_id):
             _sync_status["errors"].append(f"Unexpected error: {str(e)}")
             _sync_status["error_count"] += 1
 
-@app.post("/api/qfieldcloud/sync")
-def sync_qfieldcloud():
+def _trigger_sync(raise_on_error: bool = False) -> dict:
+    """Shared helper: authenticate with QField Cloud and kick off a background sync thread.
+    
+    Args:
+        raise_on_error: If True, raises HTTPException on config/auth errors (for the API endpoint).
+                        If False, logs errors and returns a status dict (for startup / internal calls).
+    """
     global _sync_status
     cfg = load_qfield_config()
     url = cfg.get("url", "https://app.qfield.cloud/api/v1/").rstrip("/") + "/"
@@ -2778,39 +2792,55 @@ def sync_qfieldcloud():
     token = cfg.get("token", "")
 
     if not project_id:
-        raise HTTPException(status_code=400, detail="QField Cloud Project ID is not configured.")
+        msg = "QField Cloud Project ID is not configured — skipping sync."
+        if raise_on_error:
+            raise HTTPException(status_code=400, detail=msg)
+        logger.warning(f"[SYNC] {msg}")
+        return {"status": "skipped", "message": msg}
 
     headers = {}
-    
-    # Authenticate synchronously first to catch login/auth errors immediately
+
+    # Authenticate: prefer token, fall back to username/password
     if token:
         headers["Authorization"] = f"Token {token}"
     elif username and password:
-        logger.info(f"Authenticating with QField Cloud for user {username}...")
+        logger.info(f"[SYNC] Authenticating with QField Cloud for user '{username}'...")
         try:
             r = requests.post(f"{url}auth/login/", json={"username": username, "password": password}, timeout=15)
             if r.status_code != 200:
-                raise HTTPException(status_code=r.status_code, detail=f"Login failed: {r.text}")
+                msg = f"Login failed: {r.text}"
+                if raise_on_error:
+                    raise HTTPException(status_code=r.status_code, detail=msg)
+                logger.error(f"[SYNC] {msg}")
+                return {"status": "error", "message": msg}
             resp_data = r.json()
             token = resp_data.get("token")
             if not token:
-                raise HTTPException(status_code=500, detail="Failed to parse token from login response.")
+                msg = "Failed to parse token from login response."
+                if raise_on_error:
+                    raise HTTPException(status_code=500, detail=msg)
+                logger.error(f"[SYNC] {msg}")
+                return {"status": "error", "message": msg}
             headers["Authorization"] = f"Token {token}"
-            
-            # Save token to config
             cfg["token"] = token
             save_qfield_config(cfg)
         except requests.exceptions.RequestException as e:
-            raise HTTPException(status_code=502, detail=f"QField Cloud connection failed: {str(e)}")
+            msg = f"QField Cloud connection failed: {str(e)}"
+            if raise_on_error:
+                raise HTTPException(status_code=502, detail=msg)
+            logger.error(f"[SYNC] {msg}")
+            return {"status": "error", "message": msg}
     else:
-        raise HTTPException(status_code=400, detail="Please configure either Username & Password or an API Token.")
+        msg = "No credentials configured (token or username+password required)."
+        if raise_on_error:
+            raise HTTPException(status_code=400, detail=msg)
+        logger.warning(f"[SYNC] {msg}")
+        return {"status": "skipped", "message": msg}
 
-    # Check if already syncing
+    # Guard: don't start a second sync if one is already running
     with _sync_lock:
         if _sync_status["status"] == "syncing":
             return {"status": "syncing", "message": "Synchronization is already in progress."}
-        
-        # Reset sync status to initial state
         _sync_status = {
             "status": "syncing",
             "downloaded": 0,
@@ -2821,11 +2851,24 @@ def sync_qfieldcloud():
             "error_count": 0
         }
 
-    # Start thread
     t = threading.Thread(target=run_background_sync, args=(cfg, headers, url, project_id), daemon=True)
     t.start()
-
     return {"status": "syncing", "message": "Sync started in background."}
+
+
+def _startup_sync():
+    """Called once in a daemon thread during server startup."""
+    try:
+        result = _trigger_sync(raise_on_error=False)
+        logger.info(f"[STARTUP SYNC] {result}")
+    except Exception as e:
+        logger.error(f"[STARTUP SYNC] Unexpected error: {e}")
+
+
+@app.post("/api/qfieldcloud/sync")
+def sync_qfieldcloud():
+    """Manually trigger a QField Cloud sync (also auto-runs on server startup)."""
+    return _trigger_sync(raise_on_error=True)
 
 @app.get("/api/qfieldcloud/sync/status")
 def get_sync_status():
