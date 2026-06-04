@@ -5,7 +5,7 @@ services:
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
-    rootDirectory: backend
+    rootDir: backend
     disk:
       name: qfield-data
       mountPath: /data
@@ -21,8 +21,8 @@ services:
     name: mytrees-qfield-frontend
     env: static
     buildCommand: npm run build
-    publishDirectory: dist
-    rootDirectory: frontend
+    publishDir: dist
+    rootDir: frontend
     envVars:
       - key: VITE_BACKEND_URL
         fromService:
