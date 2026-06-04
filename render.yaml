@@ -17,7 +17,7 @@ services:
         value: 3.10.0
 
   # 2. Static Site Frontend (Vite / React)
-  - type: web
+  - type: static
     name: mytrees-qfield-frontend
     env: static
     buildCommand: npm run build
