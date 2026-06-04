@@ -186,6 +186,7 @@ function App() {
   const [syncStatus, setSyncStatus] = useState(null);
   const [showSyncOverlay, setShowSyncOverlay] = useState(false);
   const pollIntervalRef = React.useRef(null);
+  const spatialCacheRef = React.useRef({});
   
   const [outplantingMetrics, setOutplantingMetrics] = useState(null);
   const [nurseryMetrics, setNurseryMetrics] = useState(null);
@@ -310,6 +311,7 @@ function App() {
               setOutplantingMetrics(null);
               setNurseryMetrics(null);
               setBeekeepingMetrics(null);
+              spatialCacheRef.current = {};
               
               loadSystemMetrics();
             }
@@ -523,8 +525,6 @@ function App() {
 
   // Fetch tab layers
   useEffect(() => {
-    setPrimaryLayerData(null);
-    setSecondaryLayerData(null);
     setSelectedRecord(null);
 
     let primary = "";
@@ -566,16 +566,43 @@ function App() {
     }
 
     if (primary) {
-      fetch(`${BACKEND_URL}/api/geojson/${primary}`)
-        .then(res => res.json())
-        .then(data => setPrimaryLayerData(data))
-        .catch(console.error);
+      const cached = spatialCacheRef.current[primary];
+      if (cached) {
+        setPrimaryLayerData(cached);
+      } else {
+        setPrimaryLayerData(null);
+        fetch(`${BACKEND_URL}/api/geojson/${primary}`)
+          .then(res => res.ok ? res.json() : null)
+          .then(data => {
+            if (data) {
+              spatialCacheRef.current[primary] = data;
+              setPrimaryLayerData(data);
+            }
+          })
+          .catch(console.error);
+      }
+    } else {
+      setPrimaryLayerData(null);
     }
+
     if (secondary) {
-      fetch(`${BACKEND_URL}/api/geojson/${secondary}`)
-        .then(res => res.json())
-        .then(data => setSecondaryLayerData(data))
-        .catch(console.error);
+      const cached = spatialCacheRef.current[secondary];
+      if (cached) {
+        setSecondaryLayerData(cached);
+      } else {
+        setSecondaryLayerData(null);
+        fetch(`${BACKEND_URL}/api/geojson/${secondary}`)
+          .then(res => res.ok ? res.json() : null)
+          .then(data => {
+            if (data) {
+              spatialCacheRef.current[secondary] = data;
+              setSecondaryLayerData(data);
+            }
+          })
+          .catch(console.error);
+      }
+    } else {
+      setSecondaryLayerData(null);
     }
   }, [activeTab]);
 

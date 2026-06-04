@@ -33,6 +33,53 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from fastapi import Request, Response
+
+_api_cache = {}
+_api_cache_lock = threading.Lock()
+
+def get_cached_response(cache_key: str):
+    with _api_cache_lock:
+        return _api_cache.get(cache_key)
+
+def set_cached_response(cache_key: str, data: bytes):
+    with _api_cache_lock:
+        _api_cache[cache_key] = data
+
+def clear_api_cache():
+    global _api_cache
+    with _api_cache_lock:
+        _api_cache = {}
+
+@app.middleware("http")
+async def cache_middleware(request: Request, call_next):
+    path = request.url.path
+    if request.method == "GET" and (
+        path.startswith("/api/workflow/") or
+        path.startswith("/api/geojson/") or
+        path.startswith("/api/charts/") or
+        path == "/api/timeline" or
+        path == "/api/kpis"
+    ):
+        cached_bytes = get_cached_response(path)
+        if cached_bytes is not None:
+            return Response(content=cached_bytes, media_type="application/json")
+
+        response = await call_next(request)
+        if response.status_code == 200:
+            body = b""
+            async for chunk in response.body_iterator:
+                body += chunk
+
+            async def async_generator():
+                yield body
+            response.body_iterator = async_generator()
+
+            set_cached_response(path, body)
+        return response
+
+    return await call_next(request)
+
 BASE_DIR = os.getenv("QFIELD_BASE_DIR", r"c:\Users\ndebelem.ZINGSERVER1\Desktop\2026\QField\cloud\MyTrees")
 DCIM_DIR = os.path.join(BASE_DIR, "DCIM")
 AUDIO_DIR = os.path.join(BASE_DIR, "audio")
@@ -233,6 +280,7 @@ def clear_cache():
     cleared = list(_layer_cache.keys())
     _layer_cache = {}
     clear_media_cache()
+    clear_api_cache()
     logger.info(f"Cache cleared: {cleared}")
     return {"cleared": cleared, "message": "Cache cleared. Layers and media will reload from disk on next request."}
 
