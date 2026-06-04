@@ -17,11 +17,11 @@ services:
         value: 3.10.0
 
   # 2. Static Site Frontend (Vite / React)
-  - type: static
+  - type: web
     name: mytrees-qfield-frontend
     env: static
     buildCommand: npm run build
-    publishDir: dist
+    publishPath: dist
     rootDir: frontend
     envVars:
       - key: VITE_BACKEND_URL
