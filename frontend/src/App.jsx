@@ -326,13 +326,13 @@ function App() {
 
   const fetchQFieldConfig = () => {
     fetch(`${BACKEND_URL}/api/qfieldcloud/config`)
-      .then(res => res.json())
+      .then(res => { if (!res.ok) throw new Error(); return res.json(); })
       .then(data => {
         setQfieldConfig(prev => ({
           ...prev,
-          url: data.url,
-          username: data.username,
-          project_id: data.project_id,
+          url: data.url || prev.url,
+          username: data.username || prev.username,
+          project_id: data.project_id || prev.project_id,
           password: data.has_password ? "********" : "",
           token: data.has_token ? "********" : ""
         }));
@@ -361,21 +361,30 @@ function App() {
 
     // 2. Species chart — used in Overview + Report generator
     fetch(`${BACKEND_URL}/api/charts/survival_by_species`)
-      .then(res => res.json())
-      .then(data => setSpeciesChart(data))
-      .catch(console.error);
+      .then(res => res.ok ? res.json() : [])
+      .then(data => setSpeciesChart(Array.isArray(data) ? data : []))
+      .catch(err => {
+        console.error(err);
+        setSpeciesChart([]);
+      });
 
     // 3. Planting over time — used in Overview timeline chart
     fetch(`${BACKEND_URL}/api/charts/planting_over_time`)
-      .then(res => res.json())
-      .then(data => setPlantingOverTime(data))
-      .catch(console.error);
+      .then(res => res.ok ? res.json() : [])
+      .then(data => setPlantingOverTime(Array.isArray(data) ? data : []))
+      .catch(err => {
+        console.error(err);
+        setPlantingOverTime([]);
+      });
 
     // 4. Timeline — needed for Overview activity feed
     fetch(`${BACKEND_URL}/api/timeline`)
-      .then(res => res.json())
-      .then(data => setTimeline(data))
-      .catch(console.error);
+      .then(res => res.ok ? res.json() : [])
+      .then(data => setTimeline(Array.isArray(data) ? data : []))
+      .catch(err => {
+        console.error(err);
+        setTimeline([]);
+      });
   };
 
   // ─── Lazy per-tab data loader ────────────────────────────────────────────────

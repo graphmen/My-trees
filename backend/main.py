@@ -414,6 +414,10 @@ def get_survival_by_species():
         # Return top 10 species by total planted
         grouped = grouped.sort_values(by="total_planted", ascending=False).head(10)
         return grouped.to_dict(orient="records")
+    except HTTPException as he:
+        if he.status_code == 404:
+            return []
+        raise he
     except Exception as e:
         logger.error(f"Error rendering species chart: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -438,6 +442,10 @@ def get_planting_over_time():
         # Compute running total
         grouped["cumulative_planted"] = grouped["Planted"].cumsum()
         return grouped.to_dict(orient="records")
+    except HTTPException as he:
+        if he.status_code == 404:
+            return []
+        raise he
     except Exception as e:
         logger.error(f"Error rendering temporal planting chart: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -546,6 +554,10 @@ def get_recent_timeline():
                 "coords": coords
             })
         return events
+    except HTTPException as he:
+        if he.status_code == 404:
+            return []
+        raise he
     except Exception as e:
         logger.error(f"Error fetching timeline: {e}")
         raise HTTPException(status_code=500, detail=str(e))
