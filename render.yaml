@@ -13,20 +13,13 @@ services:
       - key: PYTHON_VERSION
         value: 3.10.0
 
-      # ── QField Cloud credentials ──────────────────────────────────────────
-      # Set the actual values in the Render dashboard under:
-      #   Environment → Add Secret File / Secret Variables
-      # Do NOT commit real passwords/tokens to git.
+      # ── QField Cloud ─────────────────────────────────────────────────────
+      # URL is not secret, set it here.
+      # QFIELD_PROJECT_ID, QFIELD_USERNAME, QFIELD_TOKEN are stored as
+      # Render Secret Files (Dashboard → Secret Files) and are automatically
+      # read from /etc/secrets/<key> at runtime.
       - key: QFIELD_URL
         value: https://app.qfield.cloud/api/v1/
-      - key: QFIELD_PROJECT_ID
-        sync: false          # Set in Render dashboard → Environment
-      - key: QFIELD_USERNAME
-        sync: false          # Set in Render dashboard → Environment
-      - key: QFIELD_PASSWORD
-        sync: false          # Set in Render dashboard → Environment
-      - key: QFIELD_TOKEN
-        sync: false          # Set in Render dashboard → Environment (preferred over password)
 
   # 2. Static Site Frontend (Vite / React)
   - type: web

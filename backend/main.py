@@ -2600,36 +2600,64 @@ _sync_status = {
 }
 _sync_lock = threading.Lock()
 
-def load_qfield_config():
-    # Environment variables take priority — essential for production (Render)
-    env_url      = os.getenv("QFIELD_URL")
-    env_username = os.getenv("QFIELD_USERNAME")
-    env_password = os.getenv("QFIELD_PASSWORD")
-    env_project  = os.getenv("QFIELD_PROJECT_ID")
-    env_token    = os.getenv("QFIELD_TOKEN")
+def _read_secret(key: str) -> str:
+    """Read a secret from env var first, then from Render Secret Files at /etc/secrets/<key>."""
+    # 1. Standard environment variable
+    val = os.getenv(key)
+    if val:
+        return val.strip()
+    # 2. Render Secret File — mounted at /etc/secrets/<key> as plain text
+    secret_path = f"/etc/secrets/{key}"
+    if os.path.exists(secret_path):
+        try:
+            with open(secret_path, "r") as f:
+                return f.read().strip()
+        except Exception:
+            pass
+    return ""
 
-    if any([env_username, env_password, env_token, env_project]):
+def load_qfield_config():
+    """Load QField Cloud credentials.
+
+    Priority order:
+      1. Environment variables        (set via Render → Environment Variables)
+      2. Render Secret Files          (set via Render → Secret Files, mounted at /etc/secrets/)
+      3. Local JSON config file       (backend/qfield_cloud_config.json, for local development)
+    """
+    url      = _read_secret("QFIELD_URL") or "https://app.qfield.cloud/api/v1/"
+    username = _read_secret("QFIELD_USERNAME")
+    password = _read_secret("QFIELD_PASSWORD")
+    project  = _read_secret("QFIELD_PROJECT_ID")
+    token    = _read_secret("QFIELD_TOKEN")
+
+    if any([username, password, token, project]):
+        logger.info(f"[CONFIG] Loaded QField credentials from environment/secret files "
+                    f"(project={project[:8]}..., has_token={bool(token)})")
         return {
-            "url":        env_url or "https://app.qfield.cloud/api/v1/",
-            "username":   env_username or "",
-            "password":   env_password or "",
-            "project_id": env_project or "",
-            "token":      env_token or ""
+            "url":        url,
+            "username":   username,
+            "password":   password,
+            "project_id": project,
+            "token":      token
         }
 
     # Fallback: local JSON config file (used during local development)
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, "r") as f:
-                return json.load(f)
+                cfg = json.load(f)
+                logger.info("[CONFIG] Loaded QField credentials from local JSON config file.")
+                return cfg
         except Exception:
             pass
+
+    logger.warning("[CONFIG] No QField Cloud credentials found — sync will be skipped.")
     return {
-        "url": "https://app.qfield.cloud/api/v1/",
-        "username": "",
-        "password": "",
+        "url":        "https://app.qfield.cloud/api/v1/",
+        "username":   "",
+        "password":   "",
         "project_id": "",
-        "token": ""
+        "token":      ""
     }
 
 def save_qfield_config(config):
