@@ -1,0 +1,123 @@
+# QField Sync Data Diagnosis & System Proposals
+
+This document analyzes the synchronized datasets from the QField project located in the `c:\Users\ndebelem.ZINGSERVER1\Desktop\2026\QField` folder, diagnoses the contents, and proposes various systems that can be built using these datasets.
+
+---
+
+## 1. Overview of the Sync Folder
+
+The workspace contains files synchronized from a **QField mobile data collection project** (titled **MyTrees**), which appears to be a community-based reforestation, forest conservation, carbon sequestration, and local livelihood initiative (located in the **Hurungwe** district of Zimbabwe, based on administrative boundary data).
+
+### Core Folder Structure
+- **GeoPackage Datasets (`*.gpkg`)**: 27 SQLite-based spatial databases containing tables, fields, and geometries (points, polygons, line tracks) mapping the forestry lifecycle.
+- **Media Directories**:
+  - `DCIM/` (750 files): Photos captured by field agents (jpg, png, heic formats) documenting tree growth, nurseries, fire damage, training sessions, and grower verification.
+  - `audio/` (38 files): Audio notes or field recordings captured during verifications or audits.
+- **QGIS Project Files**:
+  - `MTT Field_cloud.qgs`: The primary QGIS XML project file defining map styling, layers, and QField synchronization rules.
+  - `MTT Field_cloud.qgd`: The associated QGIS sqlite database storing local configurations.
+  - `MTT Field_cloud_attachments.zip`: Archive files for the project environment.
+
+---
+
+## 2. GeoPackage Dataset Breakdown
+
+Below is a diagnostic summary of the data tables, row counts, and main attributes within each GeoPackage file:
+
+| File Name | Primary Table | Row Count | Geometry Type | Key Attributes & Focus |
+| :--- | :--- | :--- | :--- | :--- |
+| **Aftercare.gpkg** | `Aftercare` | 37,921 | Point | grower details, spacing, slashing, pruning, fire guards, survival %, supervisor name. *(Largest spatial layer)* |
+| **MeetingsTrainings.gpkg** | `MeetingsTrainings` | 39,581 | Point | meeting type, agenda, attendants list, audio/photos, decisions, minutes, cluster. |
+| **Work-Plan.gpkg** | `Work-Plan` | 10,651 | Point | name, role, Monday-to-Friday schedules, field activities, challenges, recommendations. |
+| **Nursery Production Verification.gpkg** | `Nursery Production Verification` | 5,790 | Point | nursery name, work rate, growth stage, next visit date, completion level, recommendations. |
+| **Planting Update.gpkg** | `Planting Update` | 2,712 | Point | target vs. planted counts, variance, species 1–7 details, grower surname, program type. |
+| **Species Distribution.gpkg** | `Species Distribution` | 2,786 | Point | monitor name, specie type, land use location type, date. |
+| **FieldVerification.gpkg** | `FieldVerification` | 1,814 | Point | monitor, ward, village, grower name, findings, type, conclusion, decision, field audio. |
+| **PlotMapping.gpkg** | `PlotMapping` | 1,757 | MultiPolygon | grower ID, survival rates, trees planted vs. alive, plot size, year established, program type. |
+| **SurvivalCount.gpkg** | `SurvivalCount` | 1,457 | Point | trees planted/alive, height classifications (0–50cm, 51–100cm, 101–150cm, 151–200cm) across 11 species. |
+| **FireAssessement.gpkg** | `FireAssessement` | 593 | Point | grower, cause of fire, start/end time, slashed status, burnt area size, survival count, comments. |
+| **Nursery.gpkg** | `Nursery` | 311 | Point | pocketed/germinated seeds, ready counts for species 1–6, weeding/pruning status, monthly mortalities. |
+| **MTT Plot Selection.gpkg** | `MTT Plot Selection` | 288 | Point | grower name, ward, cluster, status (approved/pending). |
+| **PlotAssessment.gpkg** | `PlotAssessment` | 264 | MultiPolygon | soil type, land use, width/length, coppices, dominant species, existing biomass, calculated biomass. |
+| **Beekeeping.gpkg** | `Beekeeping` | 160 | Point | hive ID, hive type, bee type, colonization status, waxed, mounted, honey quality, quantity. |
+| **User Tracks.gpkg** | `User Tracks` | 129 | LineString | field agent name, date, track distance (km), length. *(Used to audit agent patrols)* |
+| **HurungweWards.gpkg** | `HurungweWards` | 52 | MultiPolygon | administrative ward boundaries for Hurungwe district. |
+| **ClusterMapping.gpkg** | `ClusterMapping` | 50 | MultiPolygon | cluster name, total growers, species planted, survival rates, restored areas. |
+| **CarbonProjectTreeMeasurement.gpkg** | `CarbonProjectTreeMeasurement` | 65 | Point | DBH (Diameter at Breast Height), height, canopy cover, species name, date, monitor. |
+| **SeedCollection.gpkg** | `SeedCollection` | 34 | Point | seed species collected, canopy, quantity, viability %, collection method, rainfall/temp. |
+| **Infrastracture Verfications.gpkg** | `Infrastracture Verfications` | 14 | Point | infrastructure type, stage, assessor, region, photos. |
+| **SeedBank.gpkg** | `SeedBank` | 11 | Point | bank name, capacity, quantity available, species 1–15. |
+| **Infrastructure.gpkg** | `Infrastructure` | 9 | Point | assessment type, observations, stakeholders, recommendations. |
+| **CarbonProjectValidationPlots.gpkg** | `CarbonProjectValidationPlots` | 3 | Point | validation plots, tree radii (5m/10m), species, dbh, canopy, height, grower. |
+| **Kariba Red++.gpkg** | `kariba_red__kariba_red_` | 1 | MultiPolygon | REDD+ project area boundary polygon. |
+| **ApiarySiteAssessment.gpkg** | `ApiarySiteAssessment` | 0 | Point | *(Template/Placeholder for apiary site monitoring)* |
+| **MyTreesExperimentsDemostrations.gpkg** | `MyTreesExperimentsDemostrations` | 0 | Point | *(Template/Placeholder for forestry experiments)* |
+
+---
+
+## 3. Systems We Can Build
+
+Given the richness of this data (spatial coordinates, species metadata, temporal updates, audio/visual proof, and track paths), we can build several valuable systems.
+
+### System A: Reforestation & Restoration Dashboard (Recommended)
+An interactive web application mapping the complete reforestation pipeline—from seed collection to tree growth.
+*   **Key Features**:
+    *   **Interactive GIS Map**: Render nurseries, planting plots, and clusters on an open-source map (e.g., Leaflet or MapLibre) utilizing the GeoPackage coordinates.
+    *   **Nursery Supply Chain Tracker**: Display seed bank inventory levels, seed collection success (viability %), and nursery seedling readiness (ready-to-plant totals by species).
+    *   **Planting Progress Gauges**: Real-time charts showing target vs. actual planted trees, categorized by species, region, and ward.
+    *   **Survival Performance Indicators**: Show survival rates by ward or cluster, drillable down to individual growers.
+*   **Primary Value**: Enables project coordinators to see which species perform best in which regions and identify bottlenecks in the supply chain.
+
+### System B: Carbon Offset & Biomass Auditor
+A compliance and verification portal for international carbon registries (e.g., Verra, Gold Standard) using validation plots and tree measurements.
+*   **Key Features**:
+    *   **Biomass Calculator**: Automatic calculation of carbon storage using the DBH (diameter at breast height), height, and canopy metrics inside `CarbonProjectTreeMeasurement` and `PlotAssessment` tables.
+    *   **Plot Audits**: Interactive maps showing validation plots overlaying the REDD+ project boundary (`Kariba Red++.gpkg`).
+    *   **Visual Proof Engine**: Embed field photos linked to validation plots so remote auditors can inspect tree health and measurements.
+*   **Primary Value**: Automates the carbon verification process and creates an audit trail for offset buyers.
+
+### System C: Field Operations & Patrol Command Center
+An operations management tool for tracking field agents, schedules, and training sessions.
+*   **Key Features**:
+    *   **Agent Tracking**: Visualize patrol routes by rendering `User Tracks.gpkg` (linestrings) on a map to verify agent coverage.
+    *   **Activity Audit**: Align agent tracks with completed `FieldVerification` and `Aftercare` points to prove audits actually took place.
+    *   **Audio/Visual Logger**: Play back the audio notes (`audio/`) and display photos (`DCIM/`) taken during field verifications directly on the dashboard timeline.
+    *   **Work Plan Allocator**: Display Gantt charts or calendar views mapping out weekly schedules, highlighting challenges reported by agents.
+*   **Primary Value**: Increases operational efficiency and solves the "proof of work" problem for field monitoring.
+
+### System D: Fire Risk & Damage Controller
+A disaster management tool centered around fire prevention, assessment, and recovery.
+*   **Key Features**:
+    *   **Historical Fire Heatmap**: Map out `FireAssessement.gpkg` data to show areas with frequent fire outbreaks.
+    *   **Fireguard Compliance Tracker**: Filter aftercare databases to identify plots lacking fire guards or slashing, raising red flags for supervisors.
+    *   **Burnt Area & Loss Estimator**: Summarize total trees lost vs. trees surviving fire outbreaks, linking them to fire narratives and photos.
+*   **Primary Value**: Maximizes forest protection and minimizes asset loss by identifying vulnerable zones before the dry season.
+
+### System E: Community Livelihoods & Agroforestry Hub
+A portal documenting the socio-economic impacts of the project, specifically focused on beekeeping and farmer training.
+*   **Key Features**:
+    *   **Apiary Tracker**: Map colonized beehives, monitor hive types (e.g., Kenya Top Bar vs. Langstroth), bee types, and honey harvest quality.
+    *   **Training & Meetings Logs**: Summarize meetings and grower attendances, showing community engagement metrics.
+    *   **Grower Demographics Dashboard**: Analyze gender distribution, ages, and payments/agreements across livelihood activities.
+*   **Primary Value**: Demonstrates the social impact of the conservation project to donors and stakeholders.
+
+---
+
+## 4. Suggested Implementation Strategy
+
+If we decide to build a prototype, a **Vite + React (or Next.js) web application** with an SQLite/Python backend would be ideal.
+
+```mermaid
+graph TD
+    A[QField Sync Directory] -->|Python ETL / SQLite Reader| B[Unified Database / JSON API]
+    B --> C[Next.js / React Frontend]
+    C --> D[Interactive Map Layer - Leaflet/MapLibre]
+    C --> E[Data Visualizations - Chart.js/Recharts]
+    C --> F[Media Gallery - DCIM Photos & Field Audio]
+```
+
+### Proposed First Step
+We can write a **lightweight Python backend** (e.g., using Fast API or Flask) that queries these `.gpkg` SQLite databases and serves the geo-spatial data as GeoJSON. Then we can build a **premium web interface** using standard CSS and Javascript/React to display:
+1.  An interactive map of the region showing nurseries, plots, and fire assessments.
+2.  Key performance indicator (KPI) cards (Total Trees Planted, Average Survival %, Active Nurseries, Beekeeping Hives).
+3.  Charts of tree survival by ward/species.

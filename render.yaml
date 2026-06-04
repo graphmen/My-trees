@@ -1,0 +1,31 @@
+services:
+  # 1. FastAPI Python Backend Service
+  - type: web
+    name: mytrees-qfield-backend
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    rootDirectory: backend
+    disk:
+      name: qfield-data
+      mountPath: /data
+      sizeGB: 10
+    envVars:
+      - key: QFIELD_BASE_DIR
+        value: /data/MyTrees
+      - key: PYTHON_VERSION
+        value: 3.10.0
+
+  # 2. Static Site Frontend (Vite / React)
+  - type: web
+    name: mytrees-qfield-frontend
+    env: static
+    buildCommand: npm run build
+    publishDirectory: dist
+    rootDirectory: frontend
+    envVars:
+      - key: VITE_BACKEND_URL
+        fromService:
+          type: web
+          name: mytrees-qfield-backend
+          property: host
