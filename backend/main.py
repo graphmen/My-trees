@@ -28,6 +28,11 @@ BASE_DIR = os.getenv("QFIELD_BASE_DIR", r"c:\Users\ndebelem.ZINGSERVER1\Desktop\
 DCIM_DIR = os.path.join(BASE_DIR, "DCIM")
 AUDIO_DIR = os.path.join(BASE_DIR, "audio")
 
+# Ensure base directories exist (critical on Render's ephemeral /tmp filesystem)
+os.makedirs(BASE_DIR, exist_ok=True)
+os.makedirs(DCIM_DIR, exist_ok=True)
+os.makedirs(AUDIO_DIR, exist_ok=True)
+
 # Mapping shortnames to GeoPackage file paths
 # Mapping shortnames to GeoPackage file paths
 GPKG_MAPPING = {
@@ -2587,6 +2592,23 @@ _sync_status = {
 _sync_lock = threading.Lock()
 
 def load_qfield_config():
+    # Environment variables take priority — essential for production (Render)
+    env_url      = os.getenv("QFIELD_URL")
+    env_username = os.getenv("QFIELD_USERNAME")
+    env_password = os.getenv("QFIELD_PASSWORD")
+    env_project  = os.getenv("QFIELD_PROJECT_ID")
+    env_token    = os.getenv("QFIELD_TOKEN")
+
+    if any([env_username, env_password, env_token, env_project]):
+        return {
+            "url":        env_url or "https://app.qfield.cloud/api/v1/",
+            "username":   env_username or "",
+            "password":   env_password or "",
+            "project_id": env_project or "",
+            "token":      env_token or ""
+        }
+
+    # Fallback: local JSON config file (used during local development)
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, "r") as f:
