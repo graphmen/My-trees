@@ -17,7 +17,6 @@ services:
   - type: web
     name: mytrees-qfield-frontend
     env: static
-    plan: free
     buildCommand: npm run build
     staticPublishPath: dist
     rootDir: frontend
