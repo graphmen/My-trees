@@ -21,7 +21,7 @@ services:
     name: mytrees-qfield-frontend
     env: static
     buildCommand: npm run build
-    publishPath: dist
+    staticPublishPath: dist
     rootDir: frontend
     envVars:
       - key: VITE_BACKEND_URL
