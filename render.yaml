@@ -22,7 +22,4 @@ services:
     rootDir: frontend
     envVars:
       - key: VITE_BACKEND_URL
-        fromService:
-          type: web
-          name: mytrees-qfield-backend
-          property: host
+        value: https://mytrees-qfield-backend.onrender.com
