@@ -252,6 +252,11 @@ def parse_attendants_count(att_str):
         
     return total, males, females
 
+# ---------------------------------------------------------------------------
+# GeoPackage path helper
+# ---------------------------------------------------------------------------
+GPKG_MAPPING_LAYER = {k: v for k, v in GPKG_MAPPING.items()}
+
 def get_gpkg_path(layer_name: str) -> str:
     if layer_name not in GPKG_MAPPING:
         raise HTTPException(status_code=404, detail=f"Layer {layer_name} not found in mapping")
@@ -261,24 +266,89 @@ def get_gpkg_path(layer_name: str) -> str:
     return path
 
 # ---------------------------------------------------------------------------
-# In-memory GeoPackage layer cache
-# Each .gpkg is read from disk only ONCE per server session.
-# Call load_layer(name) instead of gpd.read_file() everywhere.
+# In-memory layer cache + fast DB-backed loader
+# Priority: 1) in-memory cache  2) database (Postgres/SQLite)  3) .gpkg disk
 # ---------------------------------------------------------------------------
 _layer_cache: dict = {}
 _cache_lock = threading.Lock()
 
+# Map canonical layer names to Kafka topic / DB table names
+_LAYER_TO_TABLE = {
+    "meetings":      "mytrees_meetings",
+    "verifications": "mytrees_verifications",
+    "plantings":     "mytrees_plantings",
+    "survival":      "mytrees_survival",
+    "fires":         "mytrees_fires",
+    "beekeeping":    "mytrees_beekeeping",
+}
+
+def _load_from_db(layer_name: str) -> gpd.GeoDataFrame | None:
+    """Try to load a layer from Postgres/SQLite. Returns None on failure."""
+    table = _LAYER_TO_TABLE.get(layer_name)
+    if not table:
+        return None
+    DATABASE_URL = os.getenv("DATABASE_URL", "")
+    try:
+        if DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql://"):
+            import psycopg2
+            conn = psycopg2.connect(DATABASE_URL)
+            cur = conn.cursor()
+            cur.execute(f"SELECT fid, geometry, properties FROM {table}")
+            rows = cur.fetchall()
+            conn.close()
+        else:
+            import sqlite3 as _sqlite3
+            db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mytrees_synced.db")
+            if not os.path.exists(db_path):
+                return None
+            conn = _sqlite3.connect(db_path)
+            cur = conn.cursor()
+            cur.execute(f"SELECT fid, geometry, properties FROM {table}")
+            rows = cur.fetchall()
+            conn.close()
+
+        if not rows:
+            return None
+
+        records = []
+        geometries = []
+        for fid, geom_json, props_json in rows:
+            props = json.loads(props_json) if props_json else {}
+            props["fid"] = fid
+            records.append(props)
+            geom = None
+            if geom_json:
+                try:
+                    from shapely.geometry import shape
+                    geom = shape(json.loads(geom_json))
+                except Exception:
+                    pass
+            geometries.append(geom)
+
+        gdf = gpd.GeoDataFrame(records, geometry=geometries, crs="EPSG:4326")
+        logger.info(f"[DB] Loaded {len(gdf)} rows for '{layer_name}' from database table '{table}'.")
+        return gdf
+    except Exception as e:
+        logger.warning(f"[DB] Could not load '{layer_name}' from database: {e}")
+        return None
+
 def load_layer(layer_name: str) -> gpd.GeoDataFrame:
-    """Load a GeoPackage layer and cache it in memory. Thread-safe."""
+    """Load a layer. Fast path: in-memory cache > database. Fallback: .gpkg disk."""
     if layer_name in _layer_cache:
         return _layer_cache[layer_name].copy()
     with _cache_lock:
-        # Double-checked locking: another thread may have populated while we waited
         if layer_name not in _layer_cache:
-            path = get_gpkg_path(layer_name)
-            logger.info(f"[CACHE MISS] Loading {layer_name} from disk...")
-            _layer_cache[layer_name] = gpd.read_file(path)
-            logger.info(f"[CACHE HIT] {layer_name} cached ({len(_layer_cache[layer_name])} rows)")
+            # Try fast database path first
+            gdf = _load_from_db(layer_name)
+            if gdf is not None and not gdf.empty:
+                _layer_cache[layer_name] = gdf
+                logger.info(f"[CACHE] '{layer_name}' loaded from database ({len(gdf)} rows).")
+            else:
+                # Fallback to .gpkg disk read
+                path = get_gpkg_path(layer_name)
+                logger.info(f"[CACHE MISS] Loading '{layer_name}' from .gpkg disk...")
+                _layer_cache[layer_name] = gpd.read_file(path)
+                logger.info(f"[CACHE HIT] '{layer_name}' cached ({len(_layer_cache[layer_name])} rows).")
     return _layer_cache[layer_name].copy()
 
 @app.get("/api/cache/clear")

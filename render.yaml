@@ -14,20 +14,41 @@ services:
         value: 3.10.0
 
       # ── QField Cloud ─────────────────────────────────────────────────────
-      # URL is not secret, set it here.
-      # QFIELD_PROJECT_ID, QFIELD_USERNAME, QFIELD_TOKEN are stored as
-      # Render Secret Files (Dashboard → Secret Files) and are automatically
-      # read from /etc/secrets/<key> at runtime.
       - key: QFIELD_URL
         value: https://app.qfield.cloud/api/v1/
 
-      # ── Aiven Kafka Connection (SSL Authentication) ──────────────────────
-      # Note: For security, KAFKA_CA_CERT, KAFKA_ACCESS_CERT, and KAFKA_ACCESS_KEY
-      # are best uploaded via Render Secrets / Secret Files, mounted at /etc/secrets/<key>
+      # ── Aiven Kafka (SSL) ─────────────────────────────────────────────────
+      # KAFKA_CA_CERT, KAFKA_ACCESS_CERT, KAFKA_ACCESS_KEY → use Render Secret Files
       - key: KAFKA_BOOTSTRAP_SERVERS
         value: kafka-3c7118d1-mytrees2026.f.aivencloud.com:15263
 
-  # 2. Static Site Frontend (Vite / React)
+      # ── Aiven PostgreSQL ──────────────────────────────────────────────────
+      # Set DATABASE_URL in Render Dashboard → Environment → Secret
+      # e.g. postgresql://avnadmin:<password>@<host>:<port>/defaultdb?sslmode=require
+      - key: DATABASE_URL
+        sync: false   # set in Render dashboard as a secret
+
+  # 2. Kafka Consumer Worker (syncs Kafka → PostgreSQL database)
+  - type: worker
+    name: mytrees-kafka-consumer
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python consumer.py
+    rootDir: backend
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.0
+
+      # ── Aiven Kafka (SSL) ─────────────────────────────────────────────────
+      - key: KAFKA_BOOTSTRAP_SERVERS
+        value: kafka-3c7118d1-mytrees2026.f.aivencloud.com:15263
+
+      # ── Aiven PostgreSQL ──────────────────────────────────────────────────
+      - key: DATABASE_URL
+        sync: false   # set in Render dashboard as a secret
+
+  # 3. Static Site Frontend (Vite / React)
   - type: web
     name: mytrees-qfield-frontend
     env: static
