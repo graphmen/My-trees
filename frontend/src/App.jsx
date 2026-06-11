@@ -492,7 +492,7 @@ function App() {
       downloaded: 0,
       skipped: 0,
       total_files: 0,
-      current_file: 'Connecting to QField Cloud...',
+      current_file: 'Connecting to Server...',
       errors: [],
       error_count: 0
     });
@@ -509,7 +509,7 @@ function App() {
         startSyncPolling();
       })
       .catch(err => {
-        console.error('QField Cloud Sync Error:', err);
+        console.error('Server Sync Error:', err);
         setSyncStatus({
           status: 'error',
           downloaded: 0,
@@ -1126,15 +1126,15 @@ function App() {
             <div style={{ fontSize: '13px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Target Holes:</span>
-                <span style={{ fontWeight: 600 }}>{landprep?.target.toLocaleString()}</span>
+                <span style={{ fontWeight: 600 }}>{(landprep?.target || 0).toLocaleString()}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Marked Holes:</span>
-                <span style={{ fontWeight: 600 }}>{landprep?.marked.toLocaleString()}</span>
+                <span style={{ fontWeight: 600 }}>{(landprep?.marked || 0).toLocaleString()}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Ready to Plant:</span>
-                <span style={{ fontWeight: 600, color: '#407e52' }}>{landprep?.ready.toLocaleString()}</span>
+                <span style={{ fontWeight: 600, color: '#407e52' }}>{(landprep?.ready || 0).toLocaleString()}</span>
               </div>
             </div>
 
@@ -1153,7 +1153,7 @@ function App() {
             <h3 style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-secondary)', margin: 0 }}>SOP Standard Compliance</h3>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', marginTop: '6px' }}>
               <span style={{ color: 'var(--text-muted)' }}>Dug to SOP Standard:</span>
-              <span style={{ fontWeight: 700, color: '#72bb95' }}>{landprep?.compliant.toLocaleString()} holes</span>
+              <span style={{ fontWeight: 700, color: '#72bb95' }}>{(landprep?.compliant || 0).toLocaleString()} holes</span>
             </div>
             <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: '4px' }}>
               *Standard compliance tracks hole depth and sizing SOP requirements.
@@ -1174,15 +1174,15 @@ function App() {
             <div style={{ fontSize: '13px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Planting Target:</span>
-                <span style={{ fontWeight: 600 }}>{planting?.target.toLocaleString()}</span>
+                <span style={{ fontWeight: 600 }}>{(planting?.target || 0).toLocaleString()}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Actual Planted:</span>
-                <span style={{ fontWeight: 700, color: '#72bb95' }}>{planting?.planted.toLocaleString()}</span>
+                <span style={{ fontWeight: 700, color: '#72bb95' }}>{(planting?.planted || 0).toLocaleString()}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Variance:</span>
-                <span style={{ fontWeight: 600, color: planting?.variance > 0 ? '#ef4444' : '#407e52' }}>{planting?.variance.toLocaleString()}</span>
+                <span style={{ fontWeight: 600, color: planting?.variance > 0 ? '#ef4444' : '#407e52' }}>{(planting?.variance || 0).toLocaleString()}</span>
               </div>
             </div>
 
@@ -1258,7 +1258,7 @@ function App() {
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Total Trees Lost:</span>
-                <span style={{ fontWeight: 700, color: '#ef4444' }}>{fire?.trees_lost.toLocaleString()}</span>
+                <span style={{ fontWeight: 700, color: '#ef4444' }}>{(fire?.trees_lost || 0).toLocaleString()}</span>
               </div>
             </div>
           </div>
@@ -1291,10 +1291,10 @@ function App() {
               <span style={{ fontWeight: 700, color: '#72bb95' }}>{seed?.total_collected_kg} kg</span>
             </div>
             
-            {seed?.by_species.length > 0 && (
+            {seed?.by_species?.length > 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '10px' }}>
                 <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase' }}>By Species:</span>
-                {seed.by_species.slice(0, 5).map((item, idx) => (
+                {seed?.by_species?.slice(0, 5).map((item, idx) => (
                   <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
                     <span style={{ color: 'var(--text-muted)', maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.species}:</span>
                     <span style={{ fontWeight: 600 }}>{item.quantity_kg} kg</span>
@@ -1328,15 +1328,15 @@ function App() {
             <div style={{ fontSize: '13px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Total Seeds Pocketed:</span>
-                <span style={{ fontWeight: 600 }}>{prod?.pocketed.toLocaleString()}</span>
+                <span style={{ fontWeight: 600 }}>{(prod?.pocketed || 0).toLocaleString()}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Germinated Seedlings:</span>
-                <span style={{ fontWeight: 600, color: '#407e52' }}>{prod?.germinated.toLocaleString()}</span>
+                <span style={{ fontWeight: 600, color: '#407e52' }}>{(prod?.germinated || 0).toLocaleString()}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Ready to Plant:</span>
-                <span style={{ fontWeight: 700, color: '#72bb95' }}>{prod?.ready.toLocaleString()}</span>
+                <span style={{ fontWeight: 700, color: '#72bb95' }}>{(prod?.ready || 0).toLocaleString()}</span>
               </div>
             </div>
             
@@ -1346,11 +1346,11 @@ function App() {
             </div>
           </div>
 
-          {prod?.inventories.length > 0 && (
+          {prod?.inventories?.length > 0 && (
             <div className="glass-panel" style={{ padding: '15px', borderRadius: '12px', maxHeight: '180px', overflowY: 'auto' }}>
               <h3 style={{ fontSize: '12.5px', fontWeight: 700, color: 'var(--text-secondary)', margin: '0 0 8px 0' }}>Nursery Leaderboard</h3>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                {prod.inventories.slice(0, 5).map((item, idx) => (
+                {prod?.inventories?.slice(0, 5).map((item, idx) => (
                   <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
                     <span style={{ color: 'var(--text-muted)' }}>{item.nursery}:</span>
                     <span style={{ fontWeight: 600 }}>{item.ready} ready</span>
@@ -1372,11 +1372,11 @@ function App() {
             <div style={{ fontSize: '13px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Distributed to Growers:</span>
-                <span style={{ fontWeight: 700, color: '#72bb95' }}>{disp?.distributed.toLocaleString()}</span>
+                <span style={{ fontWeight: 700, color: '#72bb95' }}>{(disp?.distributed || 0).toLocaleString()}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Remaining in Nurseries:</span>
-                <span style={{ fontWeight: 600 }}>{disp?.remaining.toLocaleString()}</span>
+                <span style={{ fontWeight: 600 }}>{(disp?.remaining || 0).toLocaleString()}</span>
               </div>
             </div>
           </div>
@@ -7056,7 +7056,7 @@ function App() {
             className="sync-btn"
           >
             <RefreshCw size={15} className={isSyncing ? 'spin-anim' : ''} style={{ animation: isSyncing ? 'spin 1s linear infinite' : 'none' }} />
-            {isSyncing ? 'Syncing...' : 'Sync QField Cloud'}
+            {isSyncing ? 'Syncing...' : 'Sync Server'}
           </button>
 
           {/* Settings button */}
@@ -7075,7 +7075,7 @@ function App() {
               cursor: 'pointer',
               transition: 'all 0.3s ease'
             }}
-            title="QField Cloud Configuration Settings"
+            title="Server Configuration Settings"
             onMouseEnter={(e) => {
               e.currentTarget.style.backgroundColor = 'rgba(64, 126, 82, 0.18)';
               e.currentTarget.style.transform = 'rotate(45deg)';
@@ -8888,7 +8888,7 @@ function App() {
                   <ImageIcon style={{ color: '#407e52' }} /> Field Media Gallery
                 </h2>
                 <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: 'var(--text-secondary)' }}>
-                  Browse photo evidence, grower recordings, and field audit attachments synchronized from QField operations.
+                  Browse photo evidence, grower recordings, and field audit attachments synchronized from Server operations.
                 </p>
               </div>
             </div>
@@ -9164,7 +9164,7 @@ function App() {
                 <FileText style={{ color: '#407e52' }} /> Custom Report Builder
               </h2>
               <p style={{ fontSize: '12.5px', color: 'var(--text-muted)', margin: 0 }}>
-                Configure parameters and compile a printable PDF summary report utilizing aggregated QField data layers.
+                Configure parameters and compile a printable PDF summary report utilizing aggregated Server data layers.
               </p>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '10px' }}>
@@ -9922,7 +9922,7 @@ function App() {
               backgroundColor: 'var(--bg-secondary)'
             }}>
               <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Settings size={18} style={{ color: '#407e52' }} /> QField Cloud Settings
+                <Settings size={18} style={{ color: '#407e52' }} /> Server Settings
               </h3>
               <button 
                 onClick={() => setIsConfigModalOpen(false)}
@@ -9943,7 +9943,7 @@ function App() {
             {/* Modal Form Body */}
             <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '15px', maxHeight: '70vh', overflowY: 'auto' }}>
               <p style={{ margin: '0 0 5px 0', fontSize: '12.5px', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
-                Configure connection details to fetch raw databases directly from QField Cloud. Either Username & Password or a Personal API Token is required.
+                Configure connection details to fetch raw databases directly from Server. Either Username & Password or a Personal API Token is required.
               </p>
 
               {/* Endpoint URL */}
@@ -9998,7 +9998,7 @@ function App() {
                       type="text" 
                       value={qfieldConfig.username}
                       onChange={(e) => setQfieldConfig({...qfieldConfig, username: e.target.value})}
-                      placeholder="QField Cloud username"
+                      placeholder="Server username"
                       style={{
                         backgroundColor: 'var(--bg-secondary)',
                         border: '1px solid rgba(255,255,255,0.08)',
@@ -10039,7 +10039,7 @@ function App() {
                   type="password" 
                   value={qfieldConfig.token}
                   onChange={(e) => setQfieldConfig({...qfieldConfig, token: e.target.value})}
-                  placeholder="Paste QField Cloud API token..."
+                  placeholder="Paste Server API token..."
                   style={{
                     backgroundColor: 'var(--bg-secondary)',
                     border: '1px solid rgba(255,255,255,0.08)',
@@ -10204,7 +10204,7 @@ function App() {
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: '#ffffff' }}>
-                  {syncStatus.status === 'syncing' && 'Synchronizing QField Cloud'}
+                  {syncStatus.status === 'syncing' && 'Synchronizing Server'}
                   {syncStatus.status === 'success' && 'Sync Completed Successfully'}
                   {syncStatus.status === 'error' && 'Sync Encountered Errors'}
                 </h3>
