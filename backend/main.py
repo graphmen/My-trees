@@ -16,9 +16,17 @@ logger = logging.getLogger("backend")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Auto-sync from QField Cloud when the server starts (background thread)."""
+    """Auto-sync from QField Cloud and start Kafka consumer on server startup (background threads)."""
     logger.info("[STARTUP] MyTrees backend starting — triggering QField Cloud auto-sync...")
     threading.Thread(target=_startup_sync, daemon=True).start()
+    
+    try:
+        import consumer
+        logger.info("[STARTUP] Starting background Kafka database consumer thread...")
+        threading.Thread(target=consumer.main, daemon=True).start()
+    except Exception as e:
+        logger.error(f"[STARTUP] Failed to start background Kafka consumer: {e}")
+
     yield  # application runs here
     logger.info("[SHUTDOWN] MyTrees backend shutting down.")
 
