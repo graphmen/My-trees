@@ -59,4 +59,9 @@ audio/
 *.sln
 *.sw?
 .DS_Store
-Thumbs.db
+
+# Aiven Kafka Credentials and Local SQLite Databases
+*Service URI*
+~$*
+backend/*.db
+backend/*.db-journal

@@ -2676,6 +2676,280 @@ def _read_secret(key: str) -> str:
             pass
     return ""
 
+# --- AIVEN KAFKA CONFIGURATION & PRODUCER SETUP ---
+from confluent_kafka import Producer
+
+DEFAULT_CA_CERT = """-----BEGIN CERTIFICATE-----
+MIIERDCCAqygAwIBAgIUJdCfRMsHMPbn+m95hmyhnYH8Ao0wDQYJKoZIhvcNAQEM
+BQAwOjE4MDYGA1UEAwwvM2M5NzE1MzQtMGYxNi00Zjk2LTgxNmYtYzA5ZmMyZjMx
+YTFmIFByb2plY3QgQ0EwHhcNMjYwNjExMDYwMDUzWhcNMzYwNjA4MDYwMDUzWjA6
+MTgwNgYDVQQDDC8zYzk3MTUzNC0wZjE2LTRmOTYtODE2Zi1jMDlmYzJmMzFhMWYg
+UHJvamVjdCBDQTCCAaIwDQYJKoZIhvcNAQEBBQADggGPADCCAYoCggGBANTv/hCJ
+/qu4yeM9PXhF7WR0LPzT2jzH7fg4EQCTg21pd5UEAH53Fpn8uziks2ZoRhlj9NL/
+UPnhpvdl4JBrOREomXraRvelCtjbTmntNmccSSxtWByA/IB845Nnu6QApRjqxu0x
+G4H44wP3J6P83bJEWoH74HRhYFxT2BoGMBbr0dBa0/XuVRcSkWNpxx89N0nndWD0
+wM1V37h9/pXyKI/YHj7SS+RLr3FxeisaPDnHlCvzJDDOjp9gbszizfyIdU5mBs2p
+paalncMgS9OyLaNT6IkwrlMJSLhrDk99KLvdUPI1g5Vf1HMV837LKXv9NkeTZtbs
+RqbomBCYqaHdpkuE6HZnMsUqIygiHmEF57v1Br0fIHhcJrt0ZKj2oZk/nI1+qC+8
+911kcmFxXUaxG+uMzrLUWYbmz/WD0czgZa8LpWB2WKD9ay+gI5qQHvnESiUNWPjm
+AMEO30j5IzT2GZok5jBPElVPOy/x0nhhxfmuttlacQ5YuTbkIp9cXHTfPwIDAQAB
+o0IwQDAdBgNVHQ4EFgQUNI04I9vmESnSTvVoNT+MPB7zo9MwEgYDVR0TAQH/BAgw
+BgEB/wIBADALBgNVHQ8EBAMCAQYwDQYJKoZIhvcNAQEMBQADggGBALubV3P2Juk2
+aKuptNvCMmAx3fYNi2QJJBPAaOyPLUo9uPQZmKI5RSqPtWkM/gcv2XvKa6wwc9bs
+pf46SIprrKjL96rJ75vKB8Jh5fbDuim13gazSWXJD43B6SAANbIpMumkyFeyXyN4
+ilh7LHkGmpSNLawoDij+vdyLP3VnjtVtW/HxGKF236G9O83C2z15dd8kJwoda/an
+ANaQLBWHziD46rVQS97kZg3y8yZOX7rSOmzp1KiskY4Ldn6rTu9xNWeKETPh1p8O
+OscC9Prd/h6aSZ32mbqzg3Reifxg7T56o7ASNUC4KWE0lh+CFSfY87IhbAmZ2Hqf
+fF/FoiSeNclUT8zyAeUEHup+RY7FufxOpzEx1uz4w1rKeUrIrutNrg1aAyihViU1
+u+kKwRA3WWNAgR5CcM5PK2MljwF7aCo4kw54xq7Ga44Jht9HxisMxixkPL7TRsHY
+e3xSGwi2dgYTkZQvLHdQUeiPMuiUDROLubZM2gnynHduqZpdQWeeGA==
+-----END CERTIFICATE-----"""
+
+DEFAULT_ACCESS_CERT = """-----BEGIN CERTIFICATE-----
+MIIEYTCCAsmgAwIBAgIUZu42PMKQgSGc4ezCsiHU42BfE6QwDQYJKoZIhvcNAQEM
+BQAwOjE4MDYGA1UEAwwvM2M5NzE1MzQtMGYxNi00Zjk2LTgxNmYtYzA5ZmMyZjMx
+YTFmIFByb2plY3QgQ0EwHhcNMjYwNjExMDYxMTIwWhcNMjgwOTA4MDYxMTIwWjA/
+MRcwFQYDVQQKDA5rYWZrYS0zYzcxMThkMTERMA8GA1UECwwIdTF3NGg0bTQxETAP
+BgNVBAMMCGF2bmFkbWluMIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEA
+shDJoBBl7KQq91wzF0kfuxSJvDZ/OaM2xpHpEQtTa4UFRn/Dqj8zDVJOHU25I3W7
+kFwjfqKoCn49e0jHG5DmFWsHLRRrWSkR58s7uRpN0cOxyRm5rTJ4uCiUGEbXRJ44
+VGpdGwC1SUPB5awyeq949yyTZdS3HQi2WPOfOaD/VSDKnbP8npkHW4QNQS93s1JR
+2OQs/PIo5jJnR7hVZ1ioaTpLxVCQLcuS+kaHyviJ+byb3DmTfr1hvMk6wxzQU2Qs
+pkh4JSqYPxMgdpeGtmZRSVXsMs5teSMpSrIO41xtisNO8yWprs6BAhiVQbnXa0TZ
+IPwCsMm26ebOWqN1J75eSzqBeQ6JR8HrzDmmvKybSd/uTpueuPCFV9qTfBjXxPYJ
+gEzZqzZGfIbRlCFsHH+VlMd7Sj9B6wpvJwv3w4gh9OtbOjS++dUPfzvNnAh8f6KH
+UwDLXaTNWOzdIIFyjKbvYl0FMxP/kEgq5lxwFucSb+nr7rYDda2DNUEN5W2CZtQr
+AgMBAAGjWjBYMB0GA1UdDgQWBBT/ZMuywS4PtTYUPb6aeF279xpvPTAJBgNVHRME
+AjAAMAsGA1UdDwQEAwIFoDAfBgNVHSMEGDAWgBQ0jTgj2+YRKdJO9Wg1P4w8HvOj
+0zANBgkqhkiG9w0BAQwFAAOCAYEAN0R5SXOmH0o3m2eaTQFFlK4cp3U6OEAvgW6A
+nYUWzeh38fb1+Cj+gwfhW/lAwKcbY85Ng4Zojc1aclMUUXkDeF+gU5M7G3ZKrtx/
+gJshyw4Hf1DZzAh6+jicHo0R3pUy00Zqp8NSMekJzOJkyowzdV4l5K9Ii6zdSDd5
+drdKZ+mwe8KraGXbzWnl4xugp5HBzvaA6y/scUhhxpvMMV/U+bKNc9PLQfcwvxWY
+0kehsM7i8JhnwJCb3Rt/eR3fo/5Lv9ThdELKJRW1zueUhdCVrtMxGYxegvrlxg0s
++YcH8sA0fTriwU1rGczrjNqIvWpLkygbpzHavEo4wAkx7X6xdW/Lyp6HJghl3Kto
+5qscAODzwC+2LbHd8tdW1NlOD0QS2z/ZPxcLTXk7lLGXcRD3oH1jX1XnPsKEjyrN
+SwR7oSxXydt/bcek5rcZVhAu6rvi8MWXNz/x7uCIjpchtcsB9s1CQwGT8eHgtIUd
+h0yK1um0UJvLr/eB5mcDmJA7ttAm
+-----END CERTIFICATE-----"""
+
+DEFAULT_ACCESS_KEY = """-----BEGIN PRIVATE KEY-----
+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
+gwxkgIDq89yf03DE/v/p+gA=
+-----END PRIVATE KEY-----"""
+
+KAFKA_BOOTSTRAP_SERVERS = _read_secret("KAFKA_BOOTSTRAP_SERVERS") or "kafka-3c7118d1-mytrees2026.f.aivencloud.com:15263"
+
+_kafka_producer = None
+_kafka_producer_lock = threading.Lock()
+
+def _ensure_kafka_certs():
+    """Ensure that client certificates for Aiven SSL connection exist on disk."""
+    ca_content = _read_secret("KAFKA_CA_CERT")
+    cert_content = _read_secret("KAFKA_ACCESS_CERT")
+    key_content = _read_secret("KAFKA_ACCESS_KEY")
+
+    # Render persistent path / secrets mount
+    ca_path = "/etc/secrets/kafka_ca.pem"
+    cert_path = "/etc/secrets/kafka_access.cert"
+    key_path = "/etc/secrets/kafka_access.key"
+
+    if os.path.exists(ca_path) and os.path.exists(cert_path) and os.path.exists(key_path):
+        return ca_path, cert_path, key_path
+
+    # Check local certs folder (for local dev/testing)
+    local_certs_dir = os.path.join(os.path.dirname(__file__), "..", "scratch", "certs")
+    local_ca = os.path.join(local_certs_dir, "ca.pem")
+    local_cert = os.path.join(local_certs_dir, "service.cert")
+    local_key = os.path.join(local_certs_dir, "service.key")
+    if os.path.exists(local_ca) and os.path.exists(local_cert) and os.path.exists(local_key):
+        return local_ca, local_cert, local_key
+
+    # Otherwise write to temporary files from config or fallback defaults
+    certs_dir = os.path.join(tempfile.gettempdir(), "kafka_certs")
+    os.makedirs(certs_dir, exist_ok=True)
+    
+    tmp_ca = os.path.normpath(os.path.join(certs_dir, "ca.pem"))
+    tmp_cert = os.path.normpath(os.path.join(certs_dir, "service.cert"))
+    tmp_key = os.path.normpath(os.path.join(certs_dir, "service.key"))
+
+    with open(tmp_ca, "w") as f:
+        f.write(ca_content.strip() if ca_content else DEFAULT_CA_CERT.strip())
+
+    with open(tmp_cert, "w") as f:
+        f.write(cert_content.strip() if cert_content else DEFAULT_ACCESS_CERT.strip())
+
+    with open(tmp_key, "w") as f:
+        f.write(key_content.strip() if key_content else DEFAULT_ACCESS_KEY.strip())
+
+    return tmp_ca, tmp_cert, tmp_key
+
+def get_kafka_producer():
+    """Returns a thread-safe singleton Kafka Producer client."""
+    global _kafka_producer
+    if _kafka_producer is not None:
+        return _kafka_producer
+    with _kafka_producer_lock:
+        if _kafka_producer is None:
+            try:
+                ca_path, cert_path, key_path = _ensure_kafka_certs()
+                conf = {
+                    'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS,
+                    'security.protocol': 'SSL',
+                    'ssl.ca.location': ca_path,
+                    'ssl.certificate.location': cert_path,
+                    'ssl.key.location': key_path,
+                    'client.id': 'mytrees-qfield-backend-producer',
+                    'acks': 'all',
+                    'retries': 3,
+                    'linger.ms': 100,
+                    'compression.type': 'gzip',
+                    'batch.size': 131072,  # 128 KB
+                    'message.timeout.ms': 600000,  # 10 minutes
+                }
+                logger.info(f"[KAFKA] Initializing secure Kafka Producer for {KAFKA_BOOTSTRAP_SERVERS}...")
+                _kafka_producer = Producer(conf)
+            except Exception as e:
+                logger.error(f"[KAFKA] Failed to initialize secure Kafka Producer: {e}", exc_info=True)
+                _kafka_producer = None
+    return _kafka_producer
+
+def produce_kafka_event(topic: str, key: str, value: dict):
+    """Publish a JSON payload to a Kafka topic asynchronously."""
+    producer = get_kafka_producer()
+    if producer is None:
+        logger.warning(f"[KAFKA] Producer not active. Dropping message for {topic}")
+        return False
+    try:
+        payload = json.dumps(value).encode('utf-8')
+        def delivery_report(err, msg):
+            if err is not None:
+                logger.error(f"[KAFKA] Delivery to {topic} failed: {err}")
+            else:
+                logger.info(f"[KAFKA] Message successfully sent to {msg.topic()} partition [{msg.partition()}]")
+        
+        producer.produce(topic=topic, key=key.encode('utf-8') if key else None, value=payload, callback=delivery_report)
+        producer.poll(0)
+        return True
+    except Exception as e:
+        logger.error(f"[KAFKA] Error producing message to {topic}: {e}")
+        return False
+
+def flush_kafka_producer():
+    producer = get_kafka_producer()
+    if producer is not None:
+        logger.info("[KAFKA] Flushing message buffer...")
+        producer.flush()
+
+def _stream_spatial_data_to_kafka():
+    """Reads key GeoPackage layers and streams each record as a JSON event to Kafka in the background."""
+    logger.info("[KAFKA] Starting background streaming of spatial layers to Kafka...")
+    layers_to_stream = {
+        "meetings": "mytrees-meetings",
+        "verification": "mytrees-verifications",
+        "planting": "mytrees-plantings",
+        "survival_count": "mytrees-survival",
+        "fires": "mytrees-fires",
+        "beekeeping": "mytrees-beekeeping"
+    }
+    
+    for layer_name, topic in layers_to_stream.items():
+        try:
+            logger.info(f"[KAFKA] Loading layer '{layer_name}' to stream to topic '{topic}'...")
+            df = load_layer(layer_name)
+            if df.empty:
+                logger.info(f"[KAFKA] Layer '{layer_name}' is empty. Skipping.")
+                continue
+            
+            # Reproject to EPSG:4326 for standard mapping representation
+            if df.crs and df.crs.to_epsg() != 4326:
+                df = df.to_crs(epsg=4326)
+            elif not df.crs:
+                df.set_crs(epsg=4326, inplace=True)
+                
+            count = 0
+            for idx, row in df.iterrows():
+                geom_geojson = None
+                if row.geometry and not row.geometry.is_empty:
+                    from shapely.geometry import mapping
+                    try:
+                        geom_geojson = mapping(row.geometry)
+                    except Exception:
+                        pass
+                
+                record = {}
+                for col in df.columns:
+                    if col == 'geometry':
+                        record['geometry'] = geom_geojson
+                    else:
+                        val = row[col]
+                        if pd.api.types.is_datetime64_any_dtype(df[col]):
+                            record[col] = val.strftime('%Y-%m-%d %H:%M:%S') if not pd.isnull(val) else None
+                        elif pd.isnull(val):
+                            record[col] = None
+                        else:
+                            if isinstance(val, (int, float, str, bool)):
+                                record[col] = val
+                            else:
+                                record[col] = str(val)
+                
+                key_col = 'fid' if 'fid' in record else ('id' if 'id' in record else 'row_idx')
+                msg_key = str(record.get(key_col, idx))
+                
+                produce_kafka_event(
+                    topic=topic,
+                    key=f"{layer_name}_{msg_key}",
+                    value={
+                        "event": "data.record",
+                        "layer": layer_name,
+                        "data": record,
+                        "timestamp": pd.Timestamp.now().isoformat()
+                    }
+                )
+                count += 1
+                
+            logger.info(f"[KAFKA] Successfully streamed {count} records from layer '{layer_name}' to '{topic}'.")
+        except Exception as e:
+            logger.error(f"[KAFKA] Error streaming layer '{layer_name}': {e}", exc_info=True)
+            
+    flush_kafka_producer()
+    logger.info("[KAFKA] Completed background spatial streaming.")
+
 def load_qfield_config():
     """Load QField Cloud credentials.
 
@@ -2754,22 +3028,55 @@ def update_qfield_config(data: dict = Body(...)):
 
 def run_background_sync(cfg, headers, url, project_id):
     global _sync_status
+    produce_kafka_event(
+        topic="qfield-sync-events",
+        key="sync_started",
+        value={
+            "event": "sync.started",
+            "project_id": project_id,
+            "timestamp": pd.Timestamp.now().isoformat()
+        }
+    )
     try:
         logger.info(f"Fetching remote file list for project {project_id}...")
         r = requests.get(f"{url}files/{project_id}/", headers=headers, timeout=20)
         if r.status_code != 200:
+            msg = f"Failed to fetch file list: HTTP {r.status_code} - {r.text[:200]}"
             with _sync_lock:
                 _sync_status["status"] = "error"
-                _sync_status["errors"].append(f"Failed to fetch file list: HTTP {r.status_code} - {r.text[:200]}")
+                _sync_status["errors"].append(msg)
                 _sync_status["error_count"] = 1
+            produce_kafka_event(
+                topic="qfield-sync-events",
+                key="sync_failed",
+                value={
+                    "event": "sync.failed",
+                    "project_id": project_id,
+                    "errors": [msg],
+                    "timestamp": pd.Timestamp.now().isoformat()
+                }
+            )
+            flush_kafka_producer()
             return
         remote_files = r.json()
         
         if not isinstance(remote_files, list):
+            msg = "Unexpected file list format from QField Cloud API."
             with _sync_lock:
                 _sync_status["status"] = "error"
-                _sync_status["errors"].append("Unexpected file list format from QField Cloud API.")
+                _sync_status["errors"].append(msg)
                 _sync_status["error_count"] = 1
+            produce_kafka_event(
+                topic="qfield-sync-events",
+                key="sync_failed",
+                value={
+                    "event": "sync.failed",
+                    "project_id": project_id,
+                    "errors": [msg],
+                    "timestamp": pd.Timestamp.now().isoformat()
+                }
+            )
+            flush_kafka_producer()
             return
 
         with _sync_lock:
@@ -2853,16 +3160,54 @@ def run_background_sync(cfg, headers, url, project_id):
         with _sync_lock:
             if _sync_status["error_count"] > 0:
                 _sync_status["status"] = "error"
+                produce_kafka_event(
+                    topic="qfield-sync-events",
+                    key="sync_failed",
+                    value={
+                        "event": "sync.failed",
+                        "project_id": project_id,
+                        "errors": _sync_status["errors"],
+                        "timestamp": pd.Timestamp.now().isoformat()
+                    }
+                )
             else:
                 _sync_status["status"] = "success"
+                produce_kafka_event(
+                    topic="qfield-sync-events",
+                    key="sync_completed",
+                    value={
+                        "event": "sync.completed",
+                        "project_id": project_id,
+                        "files_downloaded": _sync_status["downloaded"],
+                        "files_skipped": _sync_status["skipped"],
+                        "timestamp": pd.Timestamp.now().isoformat()
+                    }
+                )
+                # Stream spatial layers to Kafka in a separate thread
+                import threading
+                threading.Thread(target=_stream_spatial_data_to_kafka, daemon=True).start()
+
             _sync_status["current_file"] = ""
+        flush_kafka_producer()
 
     except Exception as e:
+        msg = f"Unexpected error: {str(e)}"
         logger.error(f"Error in background sync thread: {str(e)}")
         with _sync_lock:
             _sync_status["status"] = "error"
-            _sync_status["errors"].append(f"Unexpected error: {str(e)}")
+            _sync_status["errors"].append(msg)
             _sync_status["error_count"] += 1
+        produce_kafka_event(
+            topic="qfield-sync-events",
+            key="sync_failed",
+            value={
+                "event": "sync.failed",
+                "project_id": project_id,
+                "errors": [msg],
+                "timestamp": pd.Timestamp.now().isoformat()
+            }
+        )
+        flush_kafka_producer()
 
 def _trigger_sync(raise_on_error: bool = False) -> dict:
     """Shared helper: authenticate with QField Cloud and kick off a background sync thread.

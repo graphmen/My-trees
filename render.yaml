@@ -21,6 +21,12 @@ services:
       - key: QFIELD_URL
         value: https://app.qfield.cloud/api/v1/
 
+      # ── Aiven Kafka Connection (SSL Authentication) ──────────────────────
+      # Note: For security, KAFKA_CA_CERT, KAFKA_ACCESS_CERT, and KAFKA_ACCESS_KEY
+      # are best uploaded via Render Secrets / Secret Files, mounted at /etc/secrets/<key>
+      - key: KAFKA_BOOTSTRAP_SERVERS
+        value: kafka-3c7118d1-mytrees2026.f.aivencloud.com:15263
+
   # 2. Static Site Frontend (Vite / React)
   - type: web
     name: mytrees-qfield-frontend
