@@ -3164,17 +3164,28 @@ def run_background_sync(cfg, headers, url, project_id):
             _sync_status["error_count"] = 0
             _sync_status["errors"] = []
 
+        # Spatial file extensions to download on startup (skip media attachments)
+        SPATIAL_EXTS = {".gpkg", ".qgs", ".qgz", ".json", ".geojson"}
+
         for f_info in remote_files:
             name = f_info.get("name")
             if not name:
                 continue
-            
+
+            # Skip media/attachment files to speed up startup sync dramatically
+            ext = os.path.splitext(name)[1].lower()
+            is_attachment = f_info.get("is_attachment", False)
+            if is_attachment or (ext and ext not in SPATIAL_EXTS):
+                with _sync_lock:
+                    _sync_status["skipped"] += 1
+                continue
+
             with _sync_lock:
                 _sync_status["current_file"] = name
-            
+
             # Determine paths
             local_path = os.path.normpath(os.path.join(BASE_DIR, name))
-            
+
             # Security check: prevent directory traversal
             if not local_path.startswith(os.path.normpath(BASE_DIR)):
                 logger.warning(f"Skipping potentially malicious path traversal: {name}")
@@ -3183,8 +3194,8 @@ def run_background_sync(cfg, headers, url, project_id):
                 continue
 
             remote_size = f_info.get("size", 0)
-            
-            # Check if local file already exists and matches size
+
+            # Skip if local file already exists and matches size
             if os.path.exists(local_path):
                 local_size = os.path.getsize(local_path)
                 if local_size == remote_size:
