@@ -270,7 +270,14 @@ def get_gpkg_path(layer_name: str) -> str:
 # Priority: 1) in-memory cache  2) database (Postgres/SQLite)  3) .gpkg disk
 # ---------------------------------------------------------------------------
 _layer_cache: dict = {}
-_cache_lock = threading.Lock()
+_layer_locks: dict = {}
+_layer_locks_lock = threading.Lock()
+
+def get_layer_lock(layer_name: str) -> threading.Lock:
+    with _layer_locks_lock:
+        if layer_name not in _layer_locks:
+            _layer_locks[layer_name] = threading.Lock()
+        return _layer_locks[layer_name]
 
 # Map canonical layer names to Kafka topic / DB table names
 _LAYER_TO_TABLE = {
@@ -336,7 +343,9 @@ def load_layer(layer_name: str) -> gpd.GeoDataFrame:
     """Load a layer. Fast path: in-memory cache > database. Fallback: .gpkg disk."""
     if layer_name in _layer_cache:
         return _layer_cache[layer_name].copy()
-    with _cache_lock:
+    
+    lock = get_layer_lock(layer_name)
+    with lock:
         if layer_name not in _layer_cache:
             # Try fast database path first
             gdf = _load_from_db(layer_name)
@@ -3027,6 +3036,18 @@ def _stream_spatial_data_to_kafka():
             
     flush_kafka_producer()
     logger.info("[KAFKA] Completed background spatial streaming.")
+    
+    # Pre-warm remaining layers for instantaneous API response times
+    prewarm_layers = [
+        "plots_assessment", "land_preparation", "seed_collection", "seed_bank",
+        "nurseries", "nurseries_verification", "red_boundary", "plots_mapping"
+    ]
+    for layer in prewarm_layers:
+        try:
+            logger.info(f"[CACHE PREWARM] Pre-warming layer '{layer}'...")
+            load_layer(layer)
+        except Exception as e:
+            logger.warning(f"[CACHE PREWARM] Failed to pre-warm layer '{layer}': {e}")
 
 def load_qfield_config():
     """Load QField Cloud credentials.
