@@ -300,8 +300,34 @@ _LAYER_TO_TABLE = {
     "apiary_assessment": "mytrees_apiary_assessment"
 }
 
+def _get_db_count(table: str) -> int:
+    """Helper to get record count from DB without loading full data."""
+    DATABASE_URL = os.getenv("DATABASE_URL", "")
+    try:
+        if DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql://"):
+            import psycopg2
+            conn = psycopg2.connect(DATABASE_URL)
+            cur = conn.cursor()
+            cur.execute(f"SELECT count(*) FROM {table}")
+            count = cur.fetchone()[0]
+            conn.close()
+            return count
+        else:
+            import sqlite3 as _sqlite3
+            db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mytrees_synced.db")
+            if not os.path.exists(db_path):
+                return 0
+            conn = _sqlite3.connect(db_path)
+            cur = conn.cursor()
+            cur.execute(f"SELECT count(*) FROM {table}")
+            count = cur.fetchone()[0]
+            conn.close()
+            return count
+    except Exception:
+        return 0
+
 def _load_from_db(layer_name: str) -> gpd.GeoDataFrame | None:
-    """Try to load a layer from Postgres/SQLite. Returns None on failure."""
+    """Load a layer from Postgres/SQLite."""
     table = _LAYER_TO_TABLE.get(layer_name)
     if not table:
         return None
@@ -317,16 +343,11 @@ def _load_from_db(layer_name: str) -> gpd.GeoDataFrame | None:
         else:
             import sqlite3 as _sqlite3
             db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mytrees_synced.db")
-            if not os.path.exists(db_path):
-                return None
             conn = _sqlite3.connect(db_path)
             cur = conn.cursor()
             cur.execute(f"SELECT fid, geometry, properties FROM {table}")
             rows = cur.fetchall()
             conn.close()
-
-        if not rows:
-            return None
 
         records = []
         geometries = []
@@ -343,22 +364,21 @@ def _load_from_db(layer_name: str) -> gpd.GeoDataFrame | None:
                     pass
             geometries.append(geom)
 
-        gdf = gpd.GeoDataFrame(records, geometry=geometries, crs="EPSG:4326")
-        logger.info(f"[DB] Loaded {len(gdf)} rows for '{layer_name}' from database table '{table}'.")
-        return gdf
+        return gpd.GeoDataFrame(records, geometry=geometries, crs="EPSG:4326")
     except Exception as e:
         logger.warning(f"[DB] Could not load '{layer_name}' from database: {e}")
         return None
 
 def load_layer(layer_name: str) -> gpd.GeoDataFrame:
-    """Load a layer. Fast path: in-memory cache > gpkg disk or database (whichever has more rows).
+    """Load a layer. Fast path: in-memory cache > best source via count comparison.
     
-    Priority logic:
-      1. In-memory cache (fastest)
-      2. .gpkg disk file — always attempted; if it has more rows than DB, prefer it
-      3. Database (Postgres/SQLite) — used when gpkg is not available or DB has equal/more rows
-    
-    This ensures stale/partially-ingested DB data never wins over the authoritative .gpkg file.
+    Strategy:
+      1. In-memory cache (instant)
+      2. Quick COUNT(*) from DB (lightweight) to compare with gpkg row count
+      3. Load full data ONLY from the source with more rows:
+         - DB wins when it has MORE rows (more complete Kafka-synced data)
+         - gpkg wins when DB count is equal or lower (prevents stale compacted DB data)
+      4. This avoids loading both full datasets on every cache miss.
     """
     if layer_name in _layer_cache:
         return _layer_cache[layer_name].copy()
@@ -366,35 +386,50 @@ def load_layer(layer_name: str) -> gpd.GeoDataFrame:
     lock = get_layer_lock(layer_name)
     with lock:
         if layer_name not in _layer_cache:
-            # Attempt to read from .gpkg disk (authoritative source)
-            gpkg_gdf = None
+            table = _LAYER_TO_TABLE.get(layer_name)
+            
+            # Quick count from DB (COUNT(*) is very fast)
+            db_count = _get_db_count(table) if table else 0
+            
+            # Get gpkg row count via fiona metadata (fast, no full read)
+            gpkg_count = 0
+            gpkg_path = None
             try:
-                path = get_gpkg_path(layer_name)
-                gpkg_gdf = gpd.read_file(path)
-                logger.info(f"[GPKG] '{layer_name}' loaded from .gpkg disk ({len(gpkg_gdf)} rows).")
-            except Exception as gpkg_err:
-                logger.warning(f"[GPKG] Could not load '{layer_name}' from .gpkg: {gpkg_err}")
+                gpkg_path = get_gpkg_path(layer_name)
+                import fiona
+                with fiona.open(gpkg_path) as fds:
+                    gpkg_count = len(fds)
+            except Exception:
+                pass
 
-            # Attempt to read from database
-            db_gdf = _load_from_db(layer_name)
+            logger.info(f"[COMPARE] '{layer_name}': DB={db_count} rows, GPKG={gpkg_count} rows")
 
-            # Choose the source with more rows — gpkg is authoritative
-            gpkg_count = len(gpkg_gdf) if gpkg_gdf is not None else 0
-            db_count = len(db_gdf) if db_gdf is not None and not db_gdf.empty else 0
+            if db_count > gpkg_count and db_count > 0:
+                # DB has more data — load full DB (Kafka-synced, more recent)
+                gdf = _load_from_db(layer_name)
+                if gdf is not None and not gdf.empty:
+                    _layer_cache[layer_name] = gdf
+                    logger.info(f"[CACHE] '{layer_name}' from DB ({db_count} rows > gpkg {gpkg_count} rows).")
+                    return _layer_cache[layer_name].copy()
 
-            if gpkg_count >= db_count and gpkg_gdf is not None and not gpkg_gdf.empty:
-                _layer_cache[layer_name] = gpkg_gdf
-                logger.info(f"[CACHE] '{layer_name}' served from .gpkg ({gpkg_count} rows) — DB had {db_count} rows.")
-            elif db_gdf is not None and not db_gdf.empty:
-                _layer_cache[layer_name] = db_gdf
-                logger.info(f"[CACHE] '{layer_name}' served from DB ({db_count} rows) — gpkg had {gpkg_count} rows.")
-            elif gpkg_gdf is not None:
-                _layer_cache[layer_name] = gpkg_gdf
-                logger.info(f"[CACHE] '{layer_name}' served from .gpkg (only source available, {gpkg_count} rows).")
-            else:
-                raise FileNotFoundError(f"Layer '{layer_name}' not found in DB or .gpkg disk.")
+            # gpkg has equal/more rows, or DB load failed — use gpkg as source of truth
+            if gpkg_path:
+                logger.info(f"[CACHE] Loading '{layer_name}' from .gpkg (gpkg={gpkg_count} >= db={db_count})...")
+                gdf = gpd.read_file(gpkg_path)
+                _layer_cache[layer_name] = gdf
+                logger.info(f"[CACHE] '{layer_name}' loaded from .gpkg ({len(gdf)} rows).")
+                return _layer_cache[layer_name].copy()
+
+            # Final fallback: try DB regardless of count
+            gdf = _load_from_db(layer_name)
+            if gdf is not None and not gdf.empty:
+                _layer_cache[layer_name] = gdf
+                return _layer_cache[layer_name].copy()
+
+            raise FileNotFoundError(f"Layer '{layer_name}' not found in DB or .gpkg disk.")
 
     return _layer_cache[layer_name].copy()
+
 
 @app.get("/api/cache/clear")
 def clear_cache():
