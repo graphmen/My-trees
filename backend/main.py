@@ -300,29 +300,28 @@ _LAYER_TO_TABLE = {
     "apiary_assessment": "mytrees_apiary_assessment"
 }
 
+def _get_connection():
+    """Establish and return database connection and its type ('postgres' or 'sqlite')."""
+    DATABASE_URL = os.getenv("DATABASE_URL", "")
+    if DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql://"):
+        import psycopg2
+        return psycopg2.connect(DATABASE_URL), "postgres"
+    else:
+        import sqlite3 as _sqlite3
+        db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mytrees_synced.db")
+        if not os.path.exists(db_path):
+            raise FileNotFoundError(f"SQLite database not found at {db_path}")
+        return _sqlite3.connect(db_path), "sqlite"
+
 def _get_db_count(table: str) -> int:
     """Helper to get record count from DB without loading full data."""
-    DATABASE_URL = os.getenv("DATABASE_URL", "")
     try:
-        if DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql://"):
-            import psycopg2
-            conn = psycopg2.connect(DATABASE_URL)
-            cur = conn.cursor()
-            cur.execute(f"SELECT count(*) FROM {table}")
-            count = cur.fetchone()[0]
-            conn.close()
-            return count
-        else:
-            import sqlite3 as _sqlite3
-            db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mytrees_synced.db")
-            if not os.path.exists(db_path):
-                return 0
-            conn = _sqlite3.connect(db_path)
-            cur = conn.cursor()
-            cur.execute(f"SELECT count(*) FROM {table}")
-            count = cur.fetchone()[0]
-            conn.close()
-            return count
+        conn, db_type = _get_connection()
+        cur = conn.cursor()
+        cur.execute(f"SELECT count(*) FROM {table}")
+        count = cur.fetchone()[0]
+        conn.close()
+        return count
     except Exception:
         return 0
 
@@ -331,23 +330,12 @@ def _load_from_db(layer_name: str) -> gpd.GeoDataFrame | None:
     table = _LAYER_TO_TABLE.get(layer_name)
     if not table:
         return None
-    DATABASE_URL = os.getenv("DATABASE_URL", "")
     try:
-        if DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql://"):
-            import psycopg2
-            conn = psycopg2.connect(DATABASE_URL)
-            cur = conn.cursor()
-            cur.execute(f"SELECT fid, geometry, properties FROM {table}")
-            rows = cur.fetchall()
-            conn.close()
-        else:
-            import sqlite3 as _sqlite3
-            db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mytrees_synced.db")
-            conn = _sqlite3.connect(db_path)
-            cur = conn.cursor()
-            cur.execute(f"SELECT fid, geometry, properties FROM {table}")
-            rows = cur.fetchall()
-            conn.close()
+        conn, db_type = _get_connection()
+        cur = conn.cursor()
+        cur.execute(f"SELECT fid, geometry, properties FROM {table}")
+        rows = cur.fetchall()
+        conn.close()
 
         records = []
         geometries = []
@@ -359,7 +347,7 @@ def _load_from_db(layer_name: str) -> gpd.GeoDataFrame | None:
             if geom_json:
                 try:
                     from shapely.geometry import shape
-                    geom = shape(json.loads(geom_json))
+                    geom = shape(json.loads(geom_json) if isinstance(geom_json, str) else geom_json)
                 except Exception:
                     pass
             geometries.append(geom)
@@ -451,7 +439,48 @@ def list_layers():
 def get_geojson(layer_name: str):
     """Retrieve spatial layer formatted as GeoJSON, with WGS84 CRS projection."""
     try:
-        # Use cached layer — avoids disk read on every request
+        table = _LAYER_TO_TABLE.get(layer_name)
+        if table:
+            db_count = _get_db_count(table)
+            gpkg_count = 0
+            gpkg_path = None
+            try:
+                gpkg_path = get_gpkg_path(layer_name)
+                import fiona
+                with fiona.open(gpkg_path) as fds:
+                    gpkg_count = len(fds)
+            except Exception:
+                pass
+            
+            # If database has more data, or we are on Render (where GPKG doesn't exist)
+            DATABASE_URL = os.getenv("DATABASE_URL", "")
+            is_postgres = DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql://")
+            
+            if (db_count > gpkg_count and db_count > 0) or (is_postgres and db_count > 0):
+                logger.info(f"[GEOJSON] Direct DB load for '{layer_name}' (DB={db_count} rows)")
+                # Direct SQL serialization bypasses shapely/geopandas completely!
+                conn, db_type = _get_connection()
+                cur = conn.cursor()
+                cur.execute(f"SELECT fid, geometry, properties FROM {table}")
+                rows = cur.fetchall()
+                conn.close()
+                
+                features = []
+                for fid, geom_json, props_json in rows:
+                    geom = json.loads(geom_json) if isinstance(geom_json, str) else geom_json
+                    props = json.loads(props_json) if isinstance(props_json, str) else (props_json or {})
+                    if not props:
+                        props = {}
+                    props["fid"] = fid
+                    if geom:
+                        features.append({
+                            "type": "Feature",
+                            "geometry": geom,
+                            "properties": props
+                        })
+                return {"type": "FeatureCollection", "features": features}
+
+        # --- Fallback to original geopandas load/serialize ---
         df = load_layer(layer_name)
 
         # Filter empty or null geometries
@@ -464,11 +493,8 @@ def get_geojson(layer_name: str):
         if df.crs and df.crs.to_epsg() != 4326:
             df = df.to_crs(epsg=4326)
         elif not df.crs:
-            # Force WGS84 if CRS is not defined but coordinate ranges match lat/long
             df.set_crs(epsg=4326, inplace=True)
 
-        # Standardize columns to string values to avoid serialization issues
-        # (excluding geometry)
         for col in df.columns:
             if col != 'geometry':
                 if pd.api.types.is_datetime64_any_dtype(df[col]):
@@ -485,8 +511,110 @@ def get_geojson(layer_name: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/kpis")
-def get_kpis():
-    """Compute high-level Key Performance Indicators across datasets."""
+def _get_kpis_from_db() -> dict:
+    """Run optimized database-only queries for KPIs to bypass expensive pandas loading."""
+    conn, db_type = _get_connection()
+    cur = conn.cursor()
+    
+    kpis = {
+        "trees_planted": 0,
+        "trees_target": 0,
+        "overall_survival_rate": 0.0,
+        "active_growers": 0,
+        "colonized_hives": 0,
+        "total_hives": 0,
+        "nursery_seedlings": 0,
+        "nursery_ready": 0,
+        "patrol_distance_km": 0.0,
+        "meetings_count": 0,
+        "fire_incidents": 0
+    }
+    
+    # 1. Planting
+    cur.execute("SELECT properties FROM mytrees_planting")
+    for (props_json,) in cur.fetchall():
+        props = json.loads(props_json) if isinstance(props_json, str) else (props_json or {})
+        try:
+            kpis["trees_planted"] += int(float(props.get("Planted") or 0))
+            kpis["trees_target"] += int(float(props.get("Target") or 0))
+        except (ValueError, TypeError):
+            pass
+            
+    # 2. Survival Rate
+    cur.execute("SELECT properties FROM mytrees_survival_count")
+    total_alive = 0.0
+    total_planted = 0.0
+    survival_rates = []
+    for (props_json,) in cur.fetchall():
+        props = json.loads(props_json) if isinstance(props_json, str) else (props_json or {})
+        try:
+            alive = float(props.get("TreesAlive") or 0)
+            planted = float(props.get("Planted") or 0)
+            total_alive += alive
+            total_planted += planted
+            s_val = props.get("Survival %")
+            if s_val is not None:
+                survival_rates.append(float(s_val))
+        except (ValueError, TypeError):
+            pass
+    if total_planted > 0:
+        kpis["overall_survival_rate"] = round((total_alive / total_planted) * 100, 1)
+    elif survival_rates:
+        kpis["overall_survival_rate"] = round(sum(survival_rates) / len(survival_rates), 1)
+        
+    # 3. Active Growers
+    cur.execute("SELECT properties FROM mytrees_plots_mapping")
+    growers = set()
+    for (props_json,) in cur.fetchall():
+        props = json.loads(props_json) if isinstance(props_json, str) else (props_json or {})
+        g_id = props.get("Grower ID") or props.get("Grower")
+        if g_id and str(g_id).strip().lower() not in ('none', 'nan', ''):
+            growers.add(str(g_id).strip())
+    kpis["active_growers"] = len(growers)
+    
+    # 4. Beekeeping
+    cur.execute("SELECT properties FROM mytrees_beekeeping")
+    for (props_json,) in cur.fetchall():
+        props = json.loads(props_json) if isinstance(props_json, str) else (props_json or {})
+        kpis["total_hives"] += 1
+        col = str(props.get("Colonized") or "").lower()
+        if "yes" in col or "1" in col or "true" in col:
+            kpis["colonized_hives"] += 1
+            
+    # 5. Nurseries
+    cur.execute("SELECT properties FROM mytrees_nurseries")
+    for (props_json,) in cur.fetchall():
+        props = json.loads(props_json) if isinstance(props_json, str) else (props_json or {})
+        try:
+            kpis["nursery_seedlings"] += int(float(props.get("Total") or 0))
+            kpis["nursery_ready"] += int(float(props.get("Ready to Plant") or 0))
+        except (ValueError, TypeError):
+            pass
+            
+    # 6. User Patrols
+    cur.execute("SELECT properties FROM mytrees_user_tracks")
+    total_len = 0.0
+    for (props_json,) in cur.fetchall():
+        props = json.loads(props_json) if isinstance(props_json, str) else (props_json or {})
+        try:
+            total_len += float(props.get("length_km") or props.get("Distance") or 0)
+        except (ValueError, TypeError):
+            pass
+    kpis["patrol_distance_km"] = round(total_len, 1)
+    
+    # 7. Meetings
+    cur.execute("SELECT count(*) FROM mytrees_meetings")
+    kpis["meetings_count"] = cur.fetchone()[0]
+    
+    # 8. Fires
+    cur.execute("SELECT count(*) FROM mytrees_fires")
+    kpis["fire_incidents"] = cur.fetchone()[0]
+    
+    conn.close()
+    return kpis
+
+def _get_kpis_slow_fallback() -> dict:
+    """Original slow path KPI calculation reading GeoPackages via pandas."""
     kpis = {
         "trees_planted": 0,
         "trees_target": 0,
@@ -504,7 +632,6 @@ def get_kpis():
     # 1. Planting Targets vs Actual
     try:
         df = load_layer("planting")
-
         df["Planted"] = pd.to_numeric(df["Planted"], errors="coerce").fillna(0)
         df["Target"] = pd.to_numeric(df["Target"], errors="coerce").fillna(0)
         kpis["trees_planted"] = int(df["Planted"].sum())
@@ -515,7 +642,6 @@ def get_kpis():
     # 2. Survival Rate
     try:
         df = load_layer("survival_count")
-
         df["TreesAlive"] = pd.to_numeric(df["TreesAlive"], errors="coerce").fillna(0)
         df["Planted"] = pd.to_numeric(df["Planted"], errors="coerce").fillna(0)
         total_alive = df["TreesAlive"].sum()
@@ -523,7 +649,6 @@ def get_kpis():
         if total_planted > 0:
             kpis["overall_survival_rate"] = round(float((total_alive / total_planted) * 100), 1)
         else:
-            # Fallback to mean of survival % column if sums are zero
             df["Survival %"] = pd.to_numeric(df["Survival %"], errors="coerce")
             kpis["overall_survival_rate"] = round(float(df["Survival %"].mean()), 1)
     except Exception as e:
@@ -532,7 +657,6 @@ def get_kpis():
     # 3. Active Growers
     try:
         df = load_layer("plots_mapping")
-
         if "Grower ID" in df.columns:
             kpis["active_growers"] = int(df["Grower ID"].nunique())
         elif "Grower" in df.columns:
@@ -543,8 +667,6 @@ def get_kpis():
     # 4. Beekeeping
     try:
         df = load_layer("beekeeping")
-
-        # Check colonized hives
         if "Colonized" in df.columns:
             colonized = df[df["Colonized"].astype(str).str.lower().str.contains("yes|1|true", na=False)]
             kpis["colonized_hives"] = int(len(colonized))
@@ -555,7 +677,6 @@ def get_kpis():
     # 5. Nurseries
     try:
         df = load_layer("nurseries")
-
         df["Total"] = pd.to_numeric(df["Total"], errors="coerce").fillna(0)
         df["Ready to Plant"] = pd.to_numeric(df["Ready to Plant"], errors="coerce").fillna(0)
         kpis["nursery_seedlings"] = int(df["Total"].sum())
@@ -566,7 +687,6 @@ def get_kpis():
     # 6. User Patrols Distance
     try:
         df = load_layer("user_tracks")
-
         df["length_km"] = pd.to_numeric(df["length_km"], errors="coerce").fillna(0)
         df["Distance"] = pd.to_numeric(df["Distance"], errors="coerce").fillna(0)
         kpis["patrol_distance_km"] = round(float(df["length_km"].sum() or df["Distance"].sum()), 1)
@@ -576,7 +696,6 @@ def get_kpis():
     # 7. Meeting Trainings
     try:
         df = load_layer("meetings")
-
         kpis["meetings_count"] = int(df.shape[0])
     except Exception as e:
         logger.warning(f"Error calculating meetings KPI: {e}")
@@ -584,12 +703,32 @@ def get_kpis():
     # 8. Fire Incidents
     try:
         df = load_layer("fires")
-
         kpis["fire_incidents"] = int(df.shape[0])
     except Exception as e:
         logger.warning(f"Error calculating fire incidents KPI: {e}")
 
     return kpis
+
+@app.get("/api/kpis")
+def get_kpis():
+    """Compute high-level Key Performance Indicators across datasets.
+    Optimized path retrieves metadata/counts directly from SQL, bypassing shapely reprojections.
+    """
+    db_has_data = False
+    try:
+        planting_count = _get_db_count("mytrees_planting")
+        if planting_count > 0:
+            db_has_data = True
+    except Exception:
+        pass
+
+    if db_has_data:
+        try:
+            return _get_kpis_from_db()
+        except Exception as e:
+            logger.warning(f"Failed to load KPIs from database: {e}. Falling back to slow GPKG path.")
+
+    return _get_kpis_slow_fallback()
 
 @app.get("/api/charts/survival_by_species")
 def get_survival_by_species():
