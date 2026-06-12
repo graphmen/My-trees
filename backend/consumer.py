@@ -38,6 +38,8 @@ LAYER_TO_TABLE = {
     "seed_collection": "mytrees_seed_collection",
     "seed_bank": "mytrees_seed_bank",
     "nurseries_verification": "mytrees_nurseries_verification",
+    "aftercare": "mytrees_aftercare",
+    "apiary_assessment": "mytrees_apiary_assessment",
     # Backward compatibility mappings for old topic-style payloads
     "mytrees-meetings": "mytrees_meetings",
     "mytrees-verifications": "mytrees_verification",
@@ -135,8 +137,6 @@ def save_record(conn, db_type, topic, msg_key, payload):
             query,
             (msg_key, fid, json.dumps(geom) if geom else None, json.dumps(properties))
         )
-    conn.commit()
-    logger.info(f"Upserted record {msg_key} into {table_name}.")
 
 
 def main():
@@ -144,24 +144,6 @@ def main():
     Kafka consumer loop. Safe to run as a background daemon thread inside FastAPI.
     Will NOT call sys.exit() — any failure is logged and the thread exits quietly.
     """
-    # Build Kafka config inside main() so import-time errors can't crash the web server
-    try:
-        from main import _ensure_kafka_certs, KAFKA_BOOTSTRAP_SERVERS
-        ca_path, cert_path, key_path = _ensure_kafka_certs()
-        kafka_conf = {
-            'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS,
-            'security.protocol': 'SSL',
-            'ssl.ca.location': ca_path,
-            'ssl.certificate.location': cert_path,
-            'ssl.key.location': key_path,
-            'group.id': 'mytrees-db-syncer-group',
-            'auto.offset.reset': 'earliest',
-            'enable.auto.commit': True
-        }
-    except Exception as e:
-        logger.error(f"[Consumer] Failed to build Kafka SSL config: {e} — consumer thread will exit.")
-        return  # safe exit, web server keeps running
-
     try:
         conn, db_type = get_db_connection()
         init_db(conn, db_type)
@@ -169,14 +151,47 @@ def main():
         logger.error(f"[Consumer] Failed to connect to database: {e} — consumer thread will exit.")
         return
 
+    # Build Kafka config inside main() so import-time errors can't crash the web server
+    try:
+        from main import _ensure_kafka_certs, KAFKA_BOOTSTRAP_SERVERS
+        ca_path, cert_path, key_path = _ensure_kafka_certs()
+        
+        # Use different consumer group IDs to avoid local partition stealing from production.
+        # Use a fresh group ID suffix for production to force Kafka to rebuild missing/empty tables on restart.
+        group_id = 'mytrees-db-syncer-group-prod-v4' if db_type == "postgres" else 'mytrees-db-syncer-group-local'
+        logger.info(f"[Consumer] Selected consumer group.id: '{group_id}'")
+        
+        kafka_conf = {
+            'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS,
+            'security.protocol': 'SSL',
+            'ssl.ca.location': ca_path,
+            'ssl.certificate.location': cert_path,
+            'ssl.key.location': key_path,
+            'group.id': group_id,
+            'auto.offset.reset': 'earliest',
+            'enable.auto.commit': True
+        }
+    except Exception as e:
+        logger.error(f"[Consumer] Failed to build Kafka SSL config: {e} — consumer thread will exit.")
+        conn.close()
+        return  # safe exit, web server keeps running
+
     logger.info("[Consumer] Kafka consumer starting — subscribing to topics...")
     consumer = Consumer(kafka_conf)
     consumer.subscribe(TOPICS)
 
     try:
+        uncommitted = 0
         while True:
             msg = consumer.poll(timeout=1.0)
             if msg is None:
+                if uncommitted > 0:
+                    try:
+                        conn.commit()
+                        logger.info(f"[Consumer] Committed batch of {uncommitted} records to database.")
+                    except Exception as commit_err:
+                        logger.error(f"[Consumer] Commit failed: {commit_err}")
+                    uncommitted = 0
                 continue
             if msg.error():
                 if msg.error().code() != KafkaError._PARTITION_EOF:
@@ -187,6 +202,14 @@ def main():
                 payload = json.loads(msg.value().decode('utf-8'))
                 if payload.get("event") == "data.record":
                     save_record(conn, db_type, msg.topic(), msg_key, payload)
+                    uncommitted += 1
+                    if uncommitted >= 500:
+                        try:
+                            conn.commit()
+                            logger.info(f"[Consumer] Committed batch of {uncommitted} records to database.")
+                        except Exception as commit_err:
+                            logger.error(f"[Consumer] Commit failed: {commit_err}")
+                        uncommitted = 0
             except Exception as e:
                 logger.error(f"[Consumer] Error processing message: {e}", exc_info=True)
     except Exception as e:

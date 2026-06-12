@@ -295,7 +295,9 @@ _LAYER_TO_TABLE = {
     "land_preparation": "mytrees_land_preparation",
     "seed_collection": "mytrees_seed_collection",
     "seed_bank": "mytrees_seed_bank",
-    "nurseries_verification": "mytrees_nurseries_verification"
+    "nurseries_verification": "mytrees_nurseries_verification",
+    "aftercare": "mytrees_aftercare",
+    "apiary_assessment": "mytrees_apiary_assessment"
 }
 
 def _load_from_db(layer_name: str) -> gpd.GeoDataFrame | None:
@@ -349,24 +351,49 @@ def _load_from_db(layer_name: str) -> gpd.GeoDataFrame | None:
         return None
 
 def load_layer(layer_name: str) -> gpd.GeoDataFrame:
-    """Load a layer. Fast path: in-memory cache > database. Fallback: .gpkg disk."""
+    """Load a layer. Fast path: in-memory cache > gpkg disk or database (whichever has more rows).
+    
+    Priority logic:
+      1. In-memory cache (fastest)
+      2. .gpkg disk file — always attempted; if it has more rows than DB, prefer it
+      3. Database (Postgres/SQLite) — used when gpkg is not available or DB has equal/more rows
+    
+    This ensures stale/partially-ingested DB data never wins over the authoritative .gpkg file.
+    """
     if layer_name in _layer_cache:
         return _layer_cache[layer_name].copy()
     
     lock = get_layer_lock(layer_name)
     with lock:
         if layer_name not in _layer_cache:
-            # Try fast database path first
-            gdf = _load_from_db(layer_name)
-            if gdf is not None and not gdf.empty:
-                _layer_cache[layer_name] = gdf
-                logger.info(f"[CACHE] '{layer_name}' loaded from database ({len(gdf)} rows).")
-            else:
-                # Fallback to .gpkg disk read
+            # Attempt to read from .gpkg disk (authoritative source)
+            gpkg_gdf = None
+            try:
                 path = get_gpkg_path(layer_name)
-                logger.info(f"[CACHE MISS] Loading '{layer_name}' from .gpkg disk...")
-                _layer_cache[layer_name] = gpd.read_file(path)
-                logger.info(f"[CACHE HIT] '{layer_name}' cached ({len(_layer_cache[layer_name])} rows).")
+                gpkg_gdf = gpd.read_file(path)
+                logger.info(f"[GPKG] '{layer_name}' loaded from .gpkg disk ({len(gpkg_gdf)} rows).")
+            except Exception as gpkg_err:
+                logger.warning(f"[GPKG] Could not load '{layer_name}' from .gpkg: {gpkg_err}")
+
+            # Attempt to read from database
+            db_gdf = _load_from_db(layer_name)
+
+            # Choose the source with more rows — gpkg is authoritative
+            gpkg_count = len(gpkg_gdf) if gpkg_gdf is not None else 0
+            db_count = len(db_gdf) if db_gdf is not None and not db_gdf.empty else 0
+
+            if gpkg_count >= db_count and gpkg_gdf is not None and not gpkg_gdf.empty:
+                _layer_cache[layer_name] = gpkg_gdf
+                logger.info(f"[CACHE] '{layer_name}' served from .gpkg ({gpkg_count} rows) — DB had {db_count} rows.")
+            elif db_gdf is not None and not db_gdf.empty:
+                _layer_cache[layer_name] = db_gdf
+                logger.info(f"[CACHE] '{layer_name}' served from DB ({db_count} rows) — gpkg had {gpkg_count} rows.")
+            elif gpkg_gdf is not None:
+                _layer_cache[layer_name] = gpkg_gdf
+                logger.info(f"[CACHE] '{layer_name}' served from .gpkg (only source available, {gpkg_count} rows).")
+            else:
+                raise FileNotFoundError(f"Layer '{layer_name}' not found in DB or .gpkg disk.")
+
     return _layer_cache[layer_name].copy()
 
 @app.get("/api/cache/clear")
@@ -677,7 +704,7 @@ def get_recent_timeline():
             date_str = row["Date"].strftime("%Y-%m-%d") if not pd.isnull(row["Date"]) else "Unknown Date"
             
             coords = None
-            if row.geometry and not row.geometry.is_empty:
+            if row.geometry is not None and not pd.isna(row.geometry) and not row.geometry.is_empty:
                 if row.geometry.type == 'Point':
                     import math
                     y, x = row.geometry.y, row.geometry.x
@@ -2992,13 +3019,16 @@ def _stream_spatial_data_to_kafka():
         "land_preparation": "mytrees-plantings",
         "seed_collection": "mytrees-meetings",
         "seed_bank": "mytrees-meetings",
-        "nurseries_verification": "mytrees-verifications"
+        "nurseries_verification": "mytrees-verifications",
+        "aftercare": "mytrees-verifications",
+        "apiary_assessment": "mytrees-beekeeping"
     }
-    
     for layer_name, topic in layers_to_stream.items():
         try:
             logger.info(f"[KAFKA] Loading layer '{layer_name}' to stream to topic '{topic}'...")
-            df = load_layer(layer_name)
+            # Load directly from disk to stream the complete fresh dataset
+            path = get_gpkg_path(layer_name)
+            df = gpd.read_file(path)
             if df.empty:
                 logger.info(f"[KAFKA] Layer '{layer_name}' is empty. Skipping.")
                 continue
@@ -3012,7 +3042,7 @@ def _stream_spatial_data_to_kafka():
             count = 0
             for idx, row in df.iterrows():
                 geom_geojson = None
-                if row.geometry and not row.geometry.is_empty:
+                if row.geometry is not None and not pd.isna(row.geometry) and not row.geometry.is_empty:
                     from shapely.geometry import mapping
                     try:
                         geom_geojson = mapping(row.geometry)
@@ -3035,8 +3065,15 @@ def _stream_spatial_data_to_kafka():
                             else:
                                 record[col] = str(val)
                 
-                key_col = 'fid' if 'fid' in record else ('id' if 'id' in record else 'row_idx')
-                msg_key = str(record.get(key_col, idx))
+                # Try to find a unique identifier
+                msg_key = None
+                for possible_key in ('fid', 'id', 'uuid'):
+                    val = record.get(possible_key)
+                    if val is not None and not pd.isna(val) and str(val).strip() != "" and str(val).lower() != "nan" and str(val).lower() != "none":
+                        msg_key = str(val)
+                        break
+                if msg_key is None:
+                    msg_key = f"idx_{idx}"
                 
                 produce_kafka_event(
                     topic=topic,
