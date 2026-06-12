@@ -10,7 +10,7 @@ logger = logging.getLogger("kafka-consumer")
 # Reuse cert generation from main backend
 backend_dir = os.path.dirname(os.path.abspath(__file__))
 
-# Topics → DB table mapping
+# Topics to subscribe to
 TOPICS = [
     "mytrees-meetings",
     "mytrees-verifications",
@@ -19,6 +19,33 @@ TOPICS = [
     "mytrees-fires",
     "mytrees-beekeeping"
 ]
+
+# Map canonical layer names (from payload.get("layer")) to database table names.
+# Fallback to topic name mapping if "layer" is not present in the payload.
+LAYER_TO_TABLE = {
+    "meetings": "mytrees_meetings",
+    "verification": "mytrees_verification",
+    "planting": "mytrees_planting",
+    "survival_count": "mytrees_survival_count",
+    "fires": "mytrees_fires",
+    "beekeeping": "mytrees_beekeeping",
+    "plots_mapping": "mytrees_plots_mapping",
+    "nurseries": "mytrees_nurseries",
+    "user_tracks": "mytrees_user_tracks",
+    "plot_selection": "mytrees_plot_selection",
+    "plots_assessment": "mytrees_plots_assessment",
+    "land_preparation": "mytrees_land_preparation",
+    "seed_collection": "mytrees_seed_collection",
+    "seed_bank": "mytrees_seed_bank",
+    "nurseries_verification": "mytrees_nurseries_verification",
+    # Backward compatibility mappings for old topic-style payloads
+    "mytrees-meetings": "mytrees_meetings",
+    "mytrees-verifications": "mytrees_verification",
+    "mytrees-plantings": "mytrees_planting",
+    "mytrees-survival": "mytrees_survival_count",
+    "mytrees-fires": "mytrees_fires",
+    "mytrees-beekeeping": "mytrees_beekeeping"
+}
 
 
 def get_db_connection():
@@ -37,10 +64,11 @@ def get_db_connection():
 
 
 def init_db(conn, db_type):
-    """Auto-creates tables for each topic."""
+    """Auto-creates tables for all layers."""
     cursor = conn.cursor()
-    for topic in TOPICS:
-        table_name = topic.replace("-", "_")
+    # Create all unique tables from LAYER_TO_TABLE values
+    tables_to_create = sorted(list(set(LAYER_TO_TABLE.values())))
+    for table_name in tables_to_create:
         if db_type == "postgres":
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS {table_name} (
@@ -67,7 +95,12 @@ def init_db(conn, db_type):
 
 def save_record(conn, db_type, topic, msg_key, payload):
     """UPSERTs a data record into the corresponding table."""
-    table_name = topic.replace("-", "_")
+    layer_name = payload.get("layer")
+    if layer_name in LAYER_TO_TABLE:
+        table_name = LAYER_TO_TABLE[layer_name]
+    else:
+        table_name = LAYER_TO_TABLE.get(topic, topic.replace("-", "_"))
+
     data_dict = payload.get("data", {})
     fid = str(data_dict.get("fid", ""))
     geom = data_dict.get("geometry")

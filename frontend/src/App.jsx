@@ -437,6 +437,10 @@ function App() {
         if (tab === 'nursery-dispatch' && !dispatchOutcomes) {
           fetch(`${BACKEND_URL}/api/workflow/dispatch/outcomes`)
             .then(r => r.json()).then(setDispatchOutcomes).catch(console.error);
+          if (!nurseryMetrics) {
+            fetch(`${BACKEND_URL}/api/workflow/nursery`)
+              .then(r => r.json()).then(setNurseryMetrics).catch(console.error);
+          }
         }
         if (tab === 'beekeeping-sites' && !sitesOutcomes) {
           fetch(`${BACKEND_URL}/api/workflow/beekeeping/sites/outcomes`)

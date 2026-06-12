@@ -281,12 +281,21 @@ def get_layer_lock(layer_name: str) -> threading.Lock:
 
 # Map canonical layer names to Kafka topic / DB table names
 _LAYER_TO_TABLE = {
-    "meetings":      "mytrees_meetings",
-    "verifications": "mytrees_verifications",
-    "plantings":     "mytrees_plantings",
-    "survival":      "mytrees_survival",
-    "fires":         "mytrees_fires",
-    "beekeeping":    "mytrees_beekeeping",
+    "meetings": "mytrees_meetings",
+    "verification": "mytrees_verification",
+    "planting": "mytrees_planting",
+    "survival_count": "mytrees_survival_count",
+    "fires": "mytrees_fires",
+    "beekeeping": "mytrees_beekeeping",
+    "plots_mapping": "mytrees_plots_mapping",
+    "nurseries": "mytrees_nurseries",
+    "user_tracks": "mytrees_user_tracks",
+    "plot_selection": "mytrees_plot_selection",
+    "plots_assessment": "mytrees_plots_assessment",
+    "land_preparation": "mytrees_land_preparation",
+    "seed_collection": "mytrees_seed_collection",
+    "seed_bank": "mytrees_seed_bank",
+    "nurseries_verification": "mytrees_nurseries_verification"
 }
 
 def _load_from_db(layer_name: str) -> gpd.GeoDataFrame | None:
@@ -2972,7 +2981,18 @@ def _stream_spatial_data_to_kafka():
         "planting": "mytrees-plantings",
         "survival_count": "mytrees-survival",
         "fires": "mytrees-fires",
-        "beekeeping": "mytrees-beekeeping"
+        "beekeeping": "mytrees-beekeeping",
+        
+        # New layers mapped to existing topics to bypass topic limit:
+        "plots_mapping": "mytrees-plantings",
+        "nurseries": "mytrees-verifications",
+        "user_tracks": "mytrees-survival",
+        "plot_selection": "mytrees-verifications",
+        "plots_assessment": "mytrees-verifications",
+        "land_preparation": "mytrees-plantings",
+        "seed_collection": "mytrees-meetings",
+        "seed_bank": "mytrees-meetings",
+        "nurseries_verification": "mytrees-verifications"
     }
     
     for layer_name, topic in layers_to_stream.items():
@@ -3352,7 +3372,10 @@ def _trigger_sync(raise_on_error: bool = False) -> dict:
             headers["Authorization"] = f"Token {token}"
             token_valid = True
 
-    if not token_valid and username and password:
+    if token_valid:
+        # Proceed, headers["Authorization"] is already set
+        pass
+    elif username and password:
         logger.info(f"[SYNC] Authenticating with QField Cloud for user '{username}'...")
         try:
             r = requests.post(f"{url}auth/login/", json={"username": username, "password": password}, timeout=15)
