@@ -3343,10 +3343,30 @@ def _trigger_sync(raise_on_error: bool = False) -> dict:
 
     headers = {}
 
-    # Authenticate: prefer token, fall back to username/password
+    # Authenticate: prefer token, check validity, fall back to username/password
+    token_valid = False
     if token:
-        headers["Authorization"] = f"Token {token}"
-    elif username and password:
+        logger.info("[SYNC] Validating stored QField Cloud token...")
+        try:
+            check_r = requests.get(f"{url}projects/{project_id}/", headers={"Authorization": f"Token {token}"}, timeout=10)
+            if check_r.status_code == 200:
+                token_valid = True
+                headers["Authorization"] = f"Token {token}"
+                logger.info("[SYNC] Stored token is valid.")
+            elif check_r.status_code == 401:
+                logger.warning("[SYNC] Stored token has expired or is invalid. Discarding and logging in again...")
+                cfg["token"] = ""
+                save_qfield_config(cfg)
+                token = ""
+            else:
+                headers["Authorization"] = f"Token {token}"
+                token_valid = True
+        except Exception as e:
+            logger.warning(f"[SYNC] Error validating token: {e}. Attempting to use it anyway.")
+            headers["Authorization"] = f"Token {token}"
+            token_valid = True
+
+    if not token_valid and username and password:
         logger.info(f"[SYNC] Authenticating with QField Cloud for user '{username}'...")
         try:
             r = requests.post(f"{url}auth/login/", json={"username": username, "password": password}, timeout=15)
