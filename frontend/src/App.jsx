@@ -1632,11 +1632,18 @@ function App() {
   };
 
   const renderMeetingsDashboard = () => {
-    if (!meetingsOutcomes) {
+    if (!meetingsOutcomes || !meetingsOutcomes.summary) {
       return (
         <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' }}>
           <div style={{ color: 'var(--text-muted)', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <RefreshCw className="active-pulse" size={18} /> Loading Meetings & Trainings Outcomes...
+            <RefreshCw className="active-pulse" size={18} /> {meetingsOutcomes && meetingsOutcomes.detail ? (
+              <span style={{ color: '#ef4444', fontWeight: 600 }}>Error: {meetingsOutcomes.detail}</span>
+            ) : (
+              <>
+                <RefreshCw className="active-pulse" size={18} /> Loading Meetings & Trainings Outcomes...
+              </>
+            )}
+          
           </div>
         </div>
       );
@@ -1993,11 +2000,18 @@ function App() {
   };
 
   const renderBeekeepingSitesDashboard = () => {
-    if (!sitesOutcomes) {
+    if (!sitesOutcomes || !sitesOutcomes.summary) {
       return (
         <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' }}>
           <div style={{ color: 'var(--text-muted)', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <RefreshCw className="active-pulse" size={18} /> Loading Apiary Site Assessment Outcomes...
+            <RefreshCw className="active-pulse" size={18} /> {sitesOutcomes && sitesOutcomes.detail ? (
+              <span style={{ color: '#ef4444', fontWeight: 600 }}>Error: {sitesOutcomes.detail}</span>
+            ) : (
+              <>
+                <RefreshCw className="active-pulse" size={18} /> Loading Apiary Site Assessment Outcomes...
+              </>
+            )}
+          
           </div>
         </div>
       );
@@ -2339,11 +2353,18 @@ function App() {
   };
 
   const renderBeekeepingTrainingsDashboard = () => {
-    if (!beekeepingTrainingsOutcomes) {
+    if (!beekeepingTrainingsOutcomes || !beekeepingTrainingsOutcomes.summary) {
       return (
         <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' }}>
           <div style={{ color: 'var(--text-muted)', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <RefreshCw className="active-pulse" size={18} /> Loading Beekeeping Trainings Outcomes...
+            <RefreshCw className="active-pulse" size={18} /> {beekeepingTrainingsOutcomes && beekeepingTrainingsOutcomes.detail ? (
+              <span style={{ color: '#ef4444', fontWeight: 600 }}>Error: {beekeepingTrainingsOutcomes.detail}</span>
+            ) : (
+              <>
+                <RefreshCw className="active-pulse" size={18} /> Loading Beekeeping Trainings Outcomes...
+              </>
+            )}
+          
           </div>
         </div>
       );
@@ -2618,11 +2639,18 @@ function App() {
   };
 
   const renderBeekeepingStatusDashboard = () => {
-    if (!statusOutcomes) {
+    if (!statusOutcomes || !statusOutcomes.summary) {
       return (
         <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' }}>
           <div style={{ color: 'var(--text-muted)', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <RefreshCw className="active-pulse" size={18} /> Loading Hive Colonization Outcomes...
+            <RefreshCw className="active-pulse" size={18} /> {statusOutcomes && statusOutcomes.detail ? (
+              <span style={{ color: '#ef4444', fontWeight: 600 }}>Error: {statusOutcomes.detail}</span>
+            ) : (
+              <>
+                <RefreshCw className="active-pulse" size={18} /> Loading Hive Colonization Outcomes...
+              </>
+            )}
+          
           </div>
         </div>
       );
@@ -3385,11 +3413,18 @@ function App() {
   };
 
   const renderEligibilityDashboard = () => {
-    if (!eligibilityOutcomes) {
+    if (!eligibilityOutcomes || !eligibilityOutcomes.summary) {
       return (
         <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' }}>
           <div style={{ color: 'var(--text-muted)', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <RefreshCw className="active-pulse" size={18} /> Loading Plot Eligibility Outcomes...
+            <RefreshCw className="active-pulse" size={18} /> {eligibilityOutcomes && eligibilityOutcomes.detail ? (
+              <span style={{ color: '#ef4444', fontWeight: 600 }}>Error: {eligibilityOutcomes.detail}</span>
+            ) : (
+              <>
+                <RefreshCw className="active-pulse" size={18} /> Loading Plot Eligibility Outcomes...
+              </>
+            )}
+          
           </div>
         </div>
       );
@@ -3774,11 +3809,18 @@ function App() {
   };
 
   const renderLandprepDashboard = () => {
-    if (!landprepOutcomes) {
+    if (!landprepOutcomes || !landprepOutcomes.summary) {
       return (
         <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' }}>
           <div style={{ color: 'var(--text-muted)', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <RefreshCw className="active-pulse" size={18} /> Loading Land Preparation Outcomes...
+            <RefreshCw className="active-pulse" size={18} /> {landprepOutcomes && landprepOutcomes.detail ? (
+              <span style={{ color: '#ef4444', fontWeight: 600 }}>Error: {landprepOutcomes.detail}</span>
+            ) : (
+              <>
+                <RefreshCw className="active-pulse" size={18} /> Loading Land Preparation Outcomes...
+              </>
+            )}
+          
           </div>
         </div>
       );
@@ -4192,11 +4234,18 @@ function App() {
   };
 
   const renderPlantingDashboard = () => {
-    if (!plantingOutcomes) {
+    if (!plantingOutcomes || !plantingOutcomes.summary) {
       return (
         <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' }}>
           <div style={{ color: 'var(--text-muted)', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <RefreshCw className="active-pulse" size={18} /> Loading Planting Update Outcomes...
+            <RefreshCw className="active-pulse" size={18} /> {plantingOutcomes && plantingOutcomes.detail ? (
+              <span style={{ color: '#ef4444', fontWeight: 600 }}>Error: {plantingOutcomes.detail}</span>
+            ) : (
+              <>
+                <RefreshCw className="active-pulse" size={18} /> Loading Planting Update Outcomes...
+              </>
+            )}
+          
           </div>
         </div>
       );
@@ -4588,11 +4637,18 @@ function App() {
   };
 
   const renderSurvivalDashboard = () => {
-    if (!survivalOutcomes) {
+    if (!survivalOutcomes || !survivalOutcomes.summary) {
       return (
         <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' }}>
           <div style={{ color: 'var(--text-muted)', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <RefreshCw className="active-pulse" size={18} /> Loading Survival & Growth Outcomes...
+            <RefreshCw className="active-pulse" size={18} /> {survivalOutcomes && survivalOutcomes.detail ? (
+              <span style={{ color: '#ef4444', fontWeight: 600 }}>Error: {survivalOutcomes.detail}</span>
+            ) : (
+              <>
+                <RefreshCw className="active-pulse" size={18} /> Loading Survival & Growth Outcomes...
+              </>
+            )}
+          
           </div>
         </div>
       );
@@ -4998,11 +5054,18 @@ function App() {
   };
 
   const renderFireDashboard = () => {
-    if (!fireOutcomes) {
+    if (!fireOutcomes || !fireOutcomes.summary) {
       return (
         <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' }}>
           <div style={{ color: 'var(--text-muted)', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <RefreshCw className="active-pulse" size={18} /> Loading Fire Management Outcomes...
+            <RefreshCw className="active-pulse" size={18} /> {fireOutcomes && fireOutcomes.detail ? (
+              <span style={{ color: '#ef4444', fontWeight: 600 }}>Error: {fireOutcomes.detail}</span>
+            ) : (
+              <>
+                <RefreshCw className="active-pulse" size={18} /> Loading Fire Management Outcomes...
+              </>
+            )}
+          
           </div>
         </div>
       );
@@ -5382,11 +5445,18 @@ function App() {
   };
 
   const renderSeedDashboard = () => {
-    if (!seedOutcomes) {
+    if (!seedOutcomes || !seedOutcomes.summary) {
       return (
         <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' }}>
           <div style={{ color: 'var(--text-muted)', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <RefreshCw className="active-pulse" size={18} /> Loading Seed Collection Outcomes...
+            <RefreshCw className="active-pulse" size={18} /> {seedOutcomes && seedOutcomes.detail ? (
+              <span style={{ color: '#ef4444', fontWeight: 600 }}>Error: {seedOutcomes.detail}</span>
+            ) : (
+              <>
+                <RefreshCw className="active-pulse" size={18} /> Loading Seed Collection Outcomes...
+              </>
+            )}
+          
           </div>
         </div>
       );
@@ -5628,8 +5698,8 @@ function App() {
                     fontWeight: 800,
                     padding: '3px 8px',
                     borderRadius: '20px',
-                    backgroundColor: bank.condition.toLowerCase().includes('good') ? 'rgba(34,197,94,0.1)' : 'rgba(245,158,11,0.1)',
-                    color: bank.condition.toLowerCase().includes('good') ? '#22c55e' : '#f59e0b'
+                    backgroundColor: (bank.condition || '').toLowerCase().includes('good') ? 'rgba(34,197,94,0.1)' : 'rgba(245,158,11,0.1)',
+                    color: (bank.condition || '').toLowerCase().includes('good') ? '#22c55e' : '#f59e0b'
                   }}>
                     {bank.condition}
                   </span>
@@ -5762,11 +5832,18 @@ function App() {
   };
 
   const renderProductionDashboard = () => {
-    if (!productionOutcomes) {
+    if (!productionOutcomes || !productionOutcomes.summary) {
       return (
         <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' }}>
           <div style={{ color: 'var(--text-muted)', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <RefreshCw className="active-pulse" size={18} /> Loading Nursery Production Outcomes...
+            <RefreshCw className="active-pulse" size={18} /> {productionOutcomes && productionOutcomes.detail ? (
+              <span style={{ color: '#ef4444', fontWeight: 600 }}>Error: {productionOutcomes.detail}</span>
+            ) : (
+              <>
+                <RefreshCw className="active-pulse" size={18} /> Loading Nursery Production Outcomes...
+              </>
+            )}
+          
           </div>
         </div>
       );
@@ -5951,9 +6028,9 @@ function App() {
                   <Pie data={chartDataWorkRate} cx="50%" cy="50%" innerRadius={60} outerRadius={85} paddingAngle={3} dataKey="value">
                     {chartDataWorkRate.map((entry, index) => {
                       let color = '#407e52';
-                      if (entry.name.toLowerCase().includes('better')) color = '#f59e0b';
-                      if (entry.name.toLowerCase().includes('excellent')) color = '#10b981';
-                      if (entry.name.toLowerCase().includes('poor')) color = '#ef4444';
+                      if ((entry.name || '').toLowerCase().includes('better')) color = '#f59e0b';
+                      if ((entry.name || '').toLowerCase().includes('excellent')) color = '#10b981';
+                      if ((entry.name || '').toLowerCase().includes('poor')) color = '#ef4444';
                       return <Cell key={`cell-${index}`} fill={color} />;
                     })}
                   </Pie>
@@ -6009,10 +6086,10 @@ function App() {
             {audits.slice(0, 15).map((audit) => {
               let badgeColor = 'rgba(34,197,94,0.1)';
               let textColor = '#22c55e';
-              if (audit.work_rate.toLowerCase().includes('poor')) {
+              if ((audit.work_rate || '').toLowerCase().includes('poor')) {
                 badgeColor = 'rgba(239,68,68,0.1)';
                 textColor = '#ef4444';
-              } else if (audit.work_rate.toLowerCase().includes('better')) {
+              } else if ((audit.work_rate || '').toLowerCase().includes('better')) {
                 badgeColor = 'rgba(245,158,11,0.1)';
                 textColor = '#f59e0b';
               }
@@ -6089,11 +6166,18 @@ function App() {
   };
 
   const renderDispatchDashboard = () => {
-    if (!dispatchOutcomes) {
+    if (!dispatchOutcomes || !dispatchOutcomes.summary) {
       return (
         <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' }}>
           <div style={{ color: 'var(--text-muted)', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <RefreshCw className="active-pulse" size={18} /> Loading Seedling Dispatch Outcomes...
+            <RefreshCw className="active-pulse" size={18} /> {dispatchOutcomes && dispatchOutcomes.detail ? (
+              <span style={{ color: '#ef4444', fontWeight: 600 }}>Error: {dispatchOutcomes.detail}</span>
+            ) : (
+              <>
+                <RefreshCw className="active-pulse" size={18} /> Loading Seedling Dispatch Outcomes...
+              </>
+            )}
+          
           </div>
         </div>
       );
