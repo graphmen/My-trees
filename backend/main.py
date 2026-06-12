@@ -3051,46 +3051,32 @@ def _stream_spatial_data_to_kafka():
 
 def load_qfield_config():
     """Load QField Cloud credentials.
-
+    
     Priority order:
-      1. Environment variables        (set via Render → Environment Variables)
-      2. Render Secret Files          (set via Render → Secret Files, mounted at /etc/secrets/)
-      3. Local JSON config file       (backend/qfield_cloud_config.json, for local development)
+      1. User-configured values saved from frontend UI Settings
+      2. Environment variables / secrets
     """
-    url      = _read_secret("QFIELD_URL") or "https://app.qfield.cloud/api/v1/"
-    username = _read_secret("QFIELD_USERNAME")
-    password = _read_secret("QFIELD_PASSWORD")
-    project  = _read_secret("QFIELD_PROJECT_ID")
-    token    = _read_secret("QFIELD_TOKEN")
-
-    if any([username, password, token, project]):
-        logger.info(f"[CONFIG] Loaded QField credentials from environment/secret files "
-                    f"(project={project[:8]}..., has_token={bool(token)})")
-        return {
-            "url":        url,
-            "username":   username,
-            "password":   password,
-            "project_id": project,
-            "token":      token
-        }
-
-    # Fallback: local JSON config file (used during local development)
+    cfg = {}
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, "r") as f:
                 cfg = json.load(f)
                 logger.info("[CONFIG] Loaded QField credentials from local JSON config file.")
-                return cfg
         except Exception:
             pass
 
-    logger.warning("[CONFIG] No QField Cloud credentials found — sync will be skipped.")
+    url      = cfg.get("url") or _read_secret("QFIELD_URL") or "https://app.qfield.cloud/api/v1/"
+    username = cfg.get("username") or _read_secret("QFIELD_USERNAME")
+    password = cfg.get("password") or _read_secret("QFIELD_PASSWORD")
+    project  = cfg.get("project_id") or _read_secret("QFIELD_PROJECT_ID")
+    token    = cfg.get("token") if "token" in cfg else _read_secret("QFIELD_TOKEN")
+
     return {
-        "url":        "https://app.qfield.cloud/api/v1/",
-        "username":   "",
-        "password":   "",
-        "project_id": "",
-        "token":      ""
+        "url":        url,
+        "username":   username,
+        "password":   password,
+        "project_id": project,
+        "token":      token
     }
 
 def save_qfield_config(config):
