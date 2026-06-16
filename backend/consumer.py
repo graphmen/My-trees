@@ -139,6 +139,66 @@ def save_record(conn, db_type, topic, msg_key, payload):
         )
 
 
+def seed_postgres_from_sqlite(postgres_conn):
+    """Seed Postgres database from local SQLite database if Postgres tables are empty."""
+    db_path = os.path.join(backend_dir, "mytrees_synced.db")
+    if not os.path.exists(db_path):
+        logger.warning(f"[Seeder] Local SQLite database not found at {db_path}. Skipping seed.")
+        return
+
+    logger.info(f"[Seeder] SQLite database found at {db_path}. Checking Postgres tables for seeding...")
+    try:
+        sqlite_conn = sqlite3.connect(db_path)
+        sqlite_cur = sqlite_conn.cursor()
+        
+        # Get list of tables in SQLite
+        sqlite_cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        sqlite_tables = [t[0] for t in sqlite_cur.fetchall()]
+        
+        postgres_cur = postgres_conn.cursor()
+        
+        # We want to seed tables defined in LAYER_TO_TABLE values
+        tables_to_seed = sorted(list(set(LAYER_TO_TABLE.values())))
+        
+        for table_name in tables_to_seed:
+            if table_name not in sqlite_tables:
+                continue
+                
+            # Check if Postgres table is empty
+            postgres_cur.execute(f"SELECT COUNT(*) FROM {table_name}")
+            pg_count = postgres_cur.fetchone()[0]
+            
+            if pg_count == 0:
+                logger.info(f"[Seeder] Postgres table '{table_name}' is empty. Fetching from SQLite...")
+                sqlite_cur.execute(f"SELECT id, fid, geometry, properties FROM {table_name}")
+                rows = sqlite_cur.fetchall()
+                if rows:
+                    logger.info(f"[Seeder] Seeding {len(rows)} records into Postgres table '{table_name}'...")
+                    prepared_rows = []
+                    for row_id, fid, geom_json, props_json in rows:
+                        geom_obj = json.loads(geom_json) if geom_json else None
+                        props_obj = json.loads(props_json) if props_json else {}
+                        prepared_rows.append((row_id, fid, json.dumps(geom_obj) if geom_obj else None, json.dumps(props_obj)))
+                    
+                    insert_query = f"""
+                        INSERT INTO {table_name} (id, fid, geometry, properties)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (id) DO NOTHING;
+                    """
+                    postgres_cur.executemany(insert_query, prepared_rows)
+                    postgres_conn.commit()
+                    logger.info(f"[Seeder] Successfully seeded '{table_name}'.")
+                else:
+                    logger.info(f"[Seeder] SQLite table '{table_name}' is empty. Nothing to seed.")
+            else:
+                logger.info(f"[Seeder] Postgres table '{table_name}' already contains {pg_count} records. Skipping.")
+                
+        sqlite_conn.close()
+        logger.info("[Seeder] Finished checking and seeding Postgres tables.")
+    except Exception as e:
+        logger.error(f"[Seeder] Error during PostgreSQL seeding: {e}", exc_info=True)
+
+
 def main():
     """
     Kafka consumer loop. Safe to run as a background daemon thread inside FastAPI.
@@ -147,6 +207,8 @@ def main():
     try:
         conn, db_type = get_db_connection()
         init_db(conn, db_type)
+        if db_type == "postgres":
+            seed_postgres_from_sqlite(conn)
     except Exception as e:
         logger.error(f"[Consumer] Failed to connect to database: {e} — consumer thread will exit.")
         return

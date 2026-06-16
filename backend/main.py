@@ -261,9 +261,18 @@ def get_gpkg_path(layer_name: str) -> str:
     if layer_name not in GPKG_MAPPING:
         raise HTTPException(status_code=404, detail=f"Layer {layer_name} not found in mapping")
     path = os.path.join(BASE_DIR, GPKG_MAPPING[layer_name])
-    if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail=f"Database file {GPKG_MAPPING[layer_name]} not found on disk")
-    return path
+    if os.path.exists(path):
+        return path
+        
+    # Fallback to local repository directory
+    repo_fallback_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cloud", "MyTrees")
+    fallback_path = os.path.join(repo_fallback_dir, GPKG_MAPPING[layer_name])
+    if os.path.exists(fallback_path):
+        logger.info(f"[FALLBACK] Using repository GPKG path for '{layer_name}': {fallback_path}")
+        return fallback_path
+        
+    raise HTTPException(status_code=404, detail=f"Database file {GPKG_MAPPING[layer_name]} not found on disk")
+
 
 # ---------------------------------------------------------------------------
 # In-memory layer cache + fast DB-backed loader
