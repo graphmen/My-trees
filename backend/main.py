@@ -439,6 +439,75 @@ def clear_cache():
     logger.info(f"Cache cleared: {cleared}")
     return {"cleared": cleared, "message": "Cache cleared. Layers and media will reload from disk on next request."}
 
+
+@app.get("/api/debug/paths")
+def debug_paths():
+    import sqlite3
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mytrees_synced.db")
+    db_exists = os.path.exists(db_path)
+    
+    sqlite_tables = {}
+    if db_exists:
+        try:
+            conn = sqlite3.connect(db_path)
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = [t[0] for t in cur.fetchall()]
+            for t in tables:
+                cur.execute(f"SELECT COUNT(*) FROM {t}")
+                sqlite_tables[t] = cur.fetchone()[0]
+            conn.close()
+        except Exception as e:
+            sqlite_tables = {"error": str(e)}
+
+    postgres_status = "Not Postgres"
+    pg_tables = {}
+    DATABASE_URL = os.getenv("DATABASE_URL", "")
+    if DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql://"):
+        postgres_status = "Postgres Configured"
+        try:
+            import psycopg2
+            conn = psycopg2.connect(DATABASE_URL)
+            cur = conn.cursor()
+            tables_to_check = sorted(list(set(_LAYER_TO_TABLE.values())))
+            for t in tables_to_check:
+                try:
+                    cur.execute(f"SELECT COUNT(*) FROM {t}")
+                    pg_tables[t] = cur.fetchone()[0]
+                except Exception as table_err:
+                    pg_tables[t] = f"Error: {table_err}"
+                    conn.rollback()
+            conn.close()
+        except Exception as pg_err:
+            postgres_status = f"Connection Error: {pg_err}"
+
+    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cloud_mytrees_dir = os.path.join(parent_dir, "cloud", "MyTrees")
+    cloud_mytrees_exists = os.path.exists(cloud_mytrees_dir)
+    cloud_files = []
+    if cloud_mytrees_exists:
+        try:
+            cloud_files = os.listdir(cloud_mytrees_dir)
+        except Exception as le:
+            cloud_files = [f"Error listing: {le}"]
+
+    return {
+        "__file__": __file__,
+        "abspath": os.path.abspath(__file__),
+        "cwd": os.getcwd(),
+        "parent_dir": parent_dir,
+        "cloud_mytrees_dir": cloud_mytrees_dir,
+        "cloud_mytrees_exists": cloud_mytrees_exists,
+        "cloud_files": cloud_files,
+        "sqlite_db_exists": db_exists,
+        "sqlite_db_path": db_path,
+        "sqlite_tables": sqlite_tables,
+        "postgres_status": postgres_status,
+        "postgres_tables": pg_tables,
+        "DATABASE_URL_starts_with": DATABASE_URL[:20] if DATABASE_URL else None
+    }
+
+
 @app.get("/api/layers")
 def list_layers():
     """List all available spatial layers."""
