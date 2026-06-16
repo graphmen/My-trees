@@ -349,7 +349,7 @@ def _load_from_db(layer_name: str) -> gpd.GeoDataFrame | None:
         records = []
         geometries = []
         for fid, geom_json, props_json in rows:
-            props = json.loads(props_json) if props_json else {}
+            props = json.loads(props_json) if isinstance(props_json, str) else (props_json or {})
             props["fid"] = fid
             records.append(props)
             geom = None
