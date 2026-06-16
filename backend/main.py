@@ -264,11 +264,11 @@ def get_gpkg_path(layer_name: str) -> str:
     if os.path.exists(path):
         return path
         
-    # Fallback to local repository directory
-    repo_fallback_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cloud", "MyTrees")
-    fallback_path = os.path.join(repo_fallback_dir, GPKG_MAPPING[layer_name])
+    # Fallback to local static folder inside backend
+    static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+    fallback_path = os.path.join(static_dir, GPKG_MAPPING[layer_name])
     if os.path.exists(fallback_path):
-        logger.info(f"[FALLBACK] Using repository GPKG path for '{layer_name}': {fallback_path}")
+        logger.info(f"[FALLBACK] Using static GPKG path for '{layer_name}': {fallback_path}")
         return fallback_path
         
     raise HTTPException(status_code=404, detail=f"Database file {GPKG_MAPPING[layer_name]} not found on disk")
@@ -481,29 +481,27 @@ def debug_paths():
         except Exception as pg_err:
             postgres_status = f"Connection Error: {pg_err}"
 
-    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    cloud_mytrees_dir = os.path.join(parent_dir, "cloud", "MyTrees")
-    cloud_mytrees_exists = os.path.exists(cloud_mytrees_dir)
-    cloud_files = []
-    if cloud_mytrees_exists:
+    static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+    static_exists = os.path.exists(static_dir)
+    static_files = []
+    if static_exists:
         try:
-            cloud_files = os.listdir(cloud_mytrees_dir)
-        except Exception as le:
-            cloud_files = [f"Error listing: {le}"]
+            static_files = os.listdir(static_dir)
+        except Exception as se:
+            static_files = [f"Error listing static: {se}"]
 
     return {
         "__file__": __file__,
         "abspath": os.path.abspath(__file__),
         "cwd": os.getcwd(),
-        "parent_dir": parent_dir,
-        "cloud_mytrees_dir": cloud_mytrees_dir,
-        "cloud_mytrees_exists": cloud_mytrees_exists,
-        "cloud_files": cloud_files,
         "sqlite_db_exists": db_exists,
         "sqlite_db_path": db_path,
         "sqlite_tables": sqlite_tables,
         "postgres_status": postgres_status,
         "postgres_tables": pg_tables,
+        "static_exists": static_exists,
+        "static_dir": static_dir,
+        "static_files": static_files,
         "DATABASE_URL_starts_with": DATABASE_URL[:20] if DATABASE_URL else None
     }
 
