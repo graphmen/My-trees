@@ -334,7 +334,7 @@ def _get_db_count(table: str) -> int:
     except Exception:
         return 0
 
-def _load_from_db(layer_name: str) -> gpd.GeoDataFrame | None:
+def _load_from_db(layer_name: str, need_geom: bool = False) -> gpd.GeoDataFrame | None:
     """Load a layer from Postgres/SQLite."""
     table = _LAYER_TO_TABLE.get(layer_name)
     if not table:
@@ -342,18 +342,27 @@ def _load_from_db(layer_name: str) -> gpd.GeoDataFrame | None:
     try:
         conn, db_type = _get_connection()
         cur = conn.cursor()
-        cur.execute(f"SELECT fid, geometry, properties FROM {table}")
+        if need_geom:
+            cur.execute(f"SELECT fid, geometry, properties FROM {table}")
+        else:
+            cur.execute(f"SELECT fid, properties FROM {table}")
         rows = cur.fetchall()
         conn.close()
 
         records = []
         geometries = []
-        for fid, geom_json, props_json in rows:
+        for row in rows:
+            if need_geom:
+                fid, geom_json, props_json = row
+            else:
+                fid, props_json = row
+                geom_json = None
+                
             props = json.loads(props_json) if isinstance(props_json, str) else (props_json or {})
             props["fid"] = fid
             records.append(props)
             geom = None
-            if geom_json:
+            if need_geom and geom_json:
                 try:
                     from shapely.geometry import shape
                     geom = shape(json.loads(geom_json) if isinstance(geom_json, str) else geom_json)
@@ -366,7 +375,7 @@ def _load_from_db(layer_name: str) -> gpd.GeoDataFrame | None:
         logger.warning(f"[DB] Could not load '{layer_name}' from database: {e}")
         return None
 
-def load_layer(layer_name: str) -> gpd.GeoDataFrame:
+def load_layer(layer_name: str, need_geom: bool = False) -> gpd.GeoDataFrame:
     """Load a layer. Fast path: in-memory cache > best source via count comparison.
     
     Strategy:
@@ -377,12 +386,13 @@ def load_layer(layer_name: str) -> gpd.GeoDataFrame:
          - gpkg wins when DB count is equal or lower (prevents stale compacted DB data)
       4. This avoids loading both full datasets on every cache miss.
     """
-    if layer_name in _layer_cache:
-        return _layer_cache[layer_name].copy()
+    cache_key = (layer_name, need_geom)
+    if cache_key in _layer_cache:
+        return _layer_cache[cache_key].copy()
     
     lock = get_layer_lock(layer_name)
     with lock:
-        if layer_name not in _layer_cache:
+        if cache_key not in _layer_cache:
             table = _LAYER_TO_TABLE.get(layer_name)
             
             # Quick count from DB (COUNT(*) is very fast)
@@ -403,29 +413,29 @@ def load_layer(layer_name: str) -> gpd.GeoDataFrame:
 
             if db_count > gpkg_count and db_count > 0:
                 # DB has more data — load full DB (Kafka-synced, more recent)
-                gdf = _load_from_db(layer_name)
+                gdf = _load_from_db(layer_name, need_geom=need_geom)
                 if gdf is not None and not gdf.empty:
-                    _layer_cache[layer_name] = gdf
-                    logger.info(f"[CACHE] '{layer_name}' from DB ({db_count} rows > gpkg {gpkg_count} rows).")
-                    return _layer_cache[layer_name].copy()
+                    _layer_cache[cache_key] = gdf
+                    logger.info(f"[CACHE] '{layer_name}' (need_geom={need_geom}) from DB ({db_count} rows > gpkg {gpkg_count} rows).")
+                    return _layer_cache[cache_key].copy()
 
             # gpkg has equal/more rows, or DB load failed — use gpkg as source of truth
             if gpkg_path:
                 logger.info(f"[CACHE] Loading '{layer_name}' from .gpkg (gpkg={gpkg_count} >= db={db_count})...")
                 gdf = gpd.read_file(gpkg_path)
-                _layer_cache[layer_name] = gdf
+                _layer_cache[cache_key] = gdf
                 logger.info(f"[CACHE] '{layer_name}' loaded from .gpkg ({len(gdf)} rows).")
-                return _layer_cache[layer_name].copy()
+                return _layer_cache[cache_key].copy()
 
             # Final fallback: try DB regardless of count
-            gdf = _load_from_db(layer_name)
+            gdf = _load_from_db(layer_name, need_geom=need_geom)
             if gdf is not None and not gdf.empty:
-                _layer_cache[layer_name] = gdf
-                return _layer_cache[layer_name].copy()
+                _layer_cache[cache_key] = gdf
+                return _layer_cache[cache_key].copy()
 
             raise FileNotFoundError(f"Layer '{layer_name}' not found in DB or .gpkg disk.")
 
-    return _layer_cache[layer_name].copy()
+    return _layer_cache[cache_key].copy()
 
 
 @app.get("/api/cache/clear")
@@ -557,7 +567,7 @@ def get_geojson(layer_name: str):
                 return {"type": "FeatureCollection", "features": features}
 
         # --- Fallback to original geopandas load/serialize ---
-        df = load_layer(layer_name)
+        df = load_layer(layer_name, need_geom=True)
 
         # Filter empty or null geometries
         df = df[df.geometry.notnull() & ~df.geometry.is_empty]
@@ -942,7 +952,7 @@ def list_media():
 def get_recent_timeline():
     """Serve a unified timeline of recent field verification audits containing audio and image proof."""
     try:
-        df = load_layer("verification")
+        df = load_layer("verification", need_geom=True)
 
         
         # Sort by date
