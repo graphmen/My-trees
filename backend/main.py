@@ -367,10 +367,11 @@ def _read_gpkg(path: str, need_geom: bool = False):
             return gpd.read_file(path)
     try:
         frame = gpd.read_file(path, engine="pyogrio", read_geometry=False)
-    except TypeError:
-        frame = gpd.read_file(path, ignore_geometry=True)
     except Exception:
-        frame = gpd.read_file(path, ignore_geometry=True)
+        try:
+            frame = gpd.read_file(path, ignore_geometry=True)
+        except Exception:
+            frame = gpd.read_file(path)
     if not isinstance(frame, gpd.GeoDataFrame):
         frame = gpd.GeoDataFrame(frame)
     return frame
@@ -2377,6 +2378,11 @@ def get_fire_outcomes():
             if ward.endswith("."):
                 ward = ward[:-1].strip()
 
+            date_raw = None
+            for col in ("Date", "date", "Time Start", "Time start", "timestamp"):
+                if col in row.index and pd.notna(row.get(col)):
+                    date_raw = row.get(col)
+                    break
             incidents_list.append({
                 "id": f"fire-{idx}",
                 "grower": clean_field(row.get("Grower"), "Unknown"),
@@ -2385,6 +2391,7 @@ def get_fire_outcomes():
                 "village": clean_field(row.get("Village"), "Unknown"),
                 "cluster": clean_field(row.get("Cluster"), "Unknown"),
                 "cause": cause,
+                "date": clean_field(date_raw, ""),
                 "time_start": clean_field(row.get("Time Start"), "Unknown"),
                 "time_end": clean_field(row.get("Time end"), "Unknown"),
                 "fireguard_status": clean_field(row.get("Fireguard"), "Unknown"),

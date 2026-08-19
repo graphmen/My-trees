@@ -129,7 +129,8 @@ const EMPTY_KPIS = {
   nursery_ready: 0,
   patrol_distance_km: 0.0,
   meetings_count: 0,
-  fire_incidents: 0
+  fire_incidents: 0,
+  burnt_hectares: 0
 };
 
 function readDashboardCache(key, fallback) {
@@ -150,6 +151,19 @@ function writeDashboardCache(key, value) {
   }
 }
 
+function formatDisplayDate(val) {
+  if (val == null) return "";
+  const text = String(val).trim();
+  if (!text || ["unknown", "none", "nan", "nat", "date logged", "null"].includes(text.toLowerCase())) {
+    return "";
+  }
+  const parsed = new Date(text);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toLocaleDateString();
+  }
+  return text;
+}
+
 function kpisLookEmpty(kpis) {
   return !kpis || ((Number(kpis.trees_planted) || 0) === 0 && (Number(kpis.meetings_count) || 0) === 0);
 }
@@ -166,6 +180,9 @@ function applyWorkflowMetrics(prev, outplanting, nursery, beekeeping) {
   }
   if ((outplanting?.fire?.incidents || 0) > (Number(next.fire_incidents) || 0)) {
     next.fire_incidents = outplanting.fire.incidents;
+  }
+  if ((outplanting?.fire?.hectares_lost || 0) > (Number(next.burnt_hectares) || 0)) {
+    next.burnt_hectares = outplanting.fire.hectares_lost;
   }
   if ((outplanting?.plot_eligibility?.qualified || 0) > (Number(next.active_growers) || 0)) {
     next.active_growers = outplanting.plot_eligibility.qualified;
@@ -577,6 +594,41 @@ function App() {
       .then(res => res.ok ? res.json() : null)
       .then(data => { if (data) applyCompiled(null, null, data); })
       .catch(console.error);
+
+    apiFetch(`/api/workflow/fire/outcomes`, {}, { retries: 2, timeoutMs: 120000 })
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (!data) return;
+        setFireOutcomes(data);
+        const burnt = Number(data.summary?.total_hectares_lost || 0);
+        if (burnt > 0) {
+          setKpis(prev => ({ ...prev, burnt_hectares: burnt }));
+        }
+      })
+      .catch(console.error);
+
+    const backgroundPages = [
+      [`/api/workflow/meetings/outcomes`, setMeetingsOutcomes],
+      [`/api/workflow/eligibility/outcomes`, setEligibilityOutcomes],
+      [`/api/workflow/landprep/outcomes`, setLandprepOutcomes],
+      [`/api/workflow/planting/outcomes`, setPlantingOutcomes],
+      [`/api/workflow/survival/outcomes`, setSurvivalOutcomes],
+      [`/api/workflow/seed/outcomes`, setSeedOutcomes],
+      [`/api/workflow/nursery-production/outcomes`, setProductionOutcomes],
+      [`/api/workflow/dispatch/outcomes`, setDispatchOutcomes],
+      [`/api/workflow/beekeeping/sites/outcomes`, setSitesOutcomes],
+      [`/api/workflow/beekeeping/trainings/outcomes`, setBeekeepingTrainingsOutcomes],
+      [`/api/workflow/beekeeping/status/outcomes`, setStatusOutcomes],
+      [`/api/workflow/verifications`, setVerificationsMetrics],
+    ];
+    backgroundPages.forEach(([path, setter], idx) => {
+      window.setTimeout(() => {
+        apiFetch(path, {}, { retries: 1, timeoutMs: 180000 })
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) => { if (data) setter(data); })
+          .catch(() => {});
+      }, 6000 + idx * 3500);
+    });
   };
 
   // ─── Lazy per-tab data loader ────────────────────────────────────────────────
@@ -1823,7 +1875,7 @@ function App() {
       );
     }
 
-    const { summary, meetings } = meetingsOutcomes;
+    const { summary, meetings = [] } = meetingsOutcomes;
     
     // Sort meetings: placing those with photos or long reports first
     const sortedMeetings = [...meetings].sort((a, b) => {
@@ -3604,7 +3656,7 @@ function App() {
       );
     }
 
-    const { summary, assessments } = eligibilityOutcomes;
+    const { summary, assessments = [] } = eligibilityOutcomes;
     
     // Sort assessments: placing those with photos first
     const sortedAssessments = [...assessments].sort((a, b) => {
@@ -4000,7 +4052,7 @@ function App() {
       );
     }
 
-    const { summary, landprep } = landprepOutcomes;
+    const { summary, landprep = [] } = landprepOutcomes;
     
     // Sort landprep: placing those with photos or audio first
     const sortedLandprep = [...landprep].sort((a, b) => {
@@ -4425,7 +4477,7 @@ function App() {
       );
     }
 
-    const { summary, planting } = plantingOutcomes;
+    const { summary, planting = [] } = plantingOutcomes;
 
     // Sort planting grower logs: placing those with the most planted trees first
     const sortedPlanting = [...planting].sort((a, b) => b.planted - a.planted);
@@ -4828,7 +4880,7 @@ function App() {
       );
     }
 
-    const { summary, survival } = survivalOutcomes;
+    const { summary, survival = [] } = survivalOutcomes;
 
     // Sort survival grower logs: placing those with the most alive trees first
     const sortedSurvival = [...survival].sort((a, b) => b.alive - a.alive);
@@ -5245,7 +5297,7 @@ function App() {
       );
     }
 
-    const { summary, incidents } = fireOutcomes;
+    const { summary, incidents = [] } = fireOutcomes;
 
     const chartDataWard = Object.entries(summary.by_ward || {}).map(([key, val]) => ({
       name: `Ward ${key}`,
@@ -5540,7 +5592,9 @@ function App() {
                     }}>
                       Severity: {assess.condition}
                     </span>
-                    <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 600 }}>Date Logged</span>
+                    <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 600 }}>
+                      {formatDisplayDate(assess.date || assess.time_start) || 'Date not recorded'}
+                    </span>
                   </div>
                   <h3 style={{ margin: '8px 0 2px 0', fontSize: '16px', fontWeight: 800, color: 'var(--text-primary)' }}>
                     Grower: {assess.grower}
@@ -6635,14 +6689,12 @@ function App() {
     const target = kpis.trees_target || 0;
     const percentReached = target > 0 ? Math.round((planted / target) * 100) : 0;
     
-    // 2. Beekeeping Calculations
-    const hivesTotal = kpis.total_hives || 0;
-    const hivesColonized = kpis.colonized_hives || 0;
+    const hivesTotal = kpis.total_hives || beekeepingMetrics?.hive_colonization?.total_hives || 0;
+    const hivesColonized = kpis.colonized_hives || beekeepingMetrics?.hive_colonization?.colonized || 0;
     const hivesRate = hivesTotal > 0 ? Math.round((hivesColonized / hivesTotal) * 100) : 0;
 
-    // 3. Nursery Calculations
-    const seedlingsReady = kpis.nursery_ready || 0;
-    const seedlingsTotal = kpis.nursery_seedlings || 0;
+    const seedlingsReady = kpis.nursery_ready || nurseryMetrics?.nursery_production?.ready || 0;
+    const seedlingsTotal = kpis.nursery_seedlings || nurseryMetrics?.nursery_production?.germinated || nurseryMetrics?.nursery_production?.pocketed || 0;
     const germinationRate = nurseryMetrics?.nursery_production?.germination_rate || 0;
 
     // 4. Species Survival Chart data formatting
@@ -6800,7 +6852,7 @@ function App() {
             </div>
             <div style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between', marginTop: '5px' }}>
               <span>Growers: <strong>{kpis.active_growers}</strong></span>
-              <span>Patrols: <strong>{kpis.patrol_distance_km} km</strong></span>
+              <span>Patrols: <strong>{kpis.patrol_distance_km || 0} km</strong></span>
             </div>
           </div>
 
@@ -6915,7 +6967,7 @@ function App() {
                 {kpis.fire_incidents}
               </div>
               <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
-                Burnt Area: {outplantingMetrics?.fire?.hectares_lost || 0} ha
+                Burnt Area: {(outplantingMetrics?.fire?.hectares_lost || kpis.burnt_hectares || fireOutcomes?.summary?.total_hectares_lost || 0)} ha
               </div>
             </div>
           </div>
