@@ -154,6 +154,26 @@ function kpisLookEmpty(kpis) {
   return !kpis || ((Number(kpis.trees_planted) || 0) === 0 && (Number(kpis.meetings_count) || 0) === 0);
 }
 
+function mergeKpisFromCharts(prev, species, planting) {
+  const next = { ...prev };
+  if (Array.isArray(planting) && planting.length) {
+    const last = planting[planting.length - 1];
+    const planted = Number(last.cumulative_planted || 0);
+    if (planted > (Number(next.trees_planted) || 0)) next.trees_planted = planted;
+  }
+  if (Array.isArray(species) && species.length) {
+    const planted = species.reduce((sum, row) => sum + Number(row.total_planted || 0), 0);
+    const alive = species.reduce((sum, row) => sum + Number(row.total_alive || 0), 0);
+    if (planted > 0) {
+      if (!(Number(next.trees_planted) || 0)) next.trees_planted = planted;
+      if (!(Number(next.overall_survival_rate) || 0)) {
+        next.overall_survival_rate = Math.round((alive / planted) * 1000) / 10;
+      }
+    }
+  }
+  return next;
+}
+
 // Custom component to dynamically control map view recentering
 function MapRecenter({ center, zoom }) {
   const map = useMap();
@@ -308,15 +328,12 @@ function App() {
     return () => clearTimeout(timer);
   }, [isLeftSidebarCollapsed, isInnerSidebarCollapsed, isRightSidebarCollapsed]);
 
-  // Fetch initial system data (wake Render first so the first paint is not a failure)
+  // Fetch overview immediately. Wake Render in parallel so health 404s cannot block the dashboard.
   useEffect(() => {
-    apiFetch("/api/health", {}, { retries: 6, timeoutMs: 25000 })
-      .catch(() => {})
-      .finally(() => {
-        loadSystemMetrics();
-        fetchQFieldConfig();
-        checkActiveSyncStatus();
-      });
+    loadSystemMetrics();
+    fetchQFieldConfig();
+    checkActiveSyncStatus();
+    apiFetch("/api/health", {}, { retries: 2, timeoutMs: 20000 }).catch(() => {});
     const keepAlive = setInterval(() => {
       apiFetch("/api/health", {}, { retries: 1, timeoutMs: 15000 }).catch(() => {});
     }, 4 * 60 * 1000);
@@ -446,6 +463,11 @@ function App() {
         if (Array.isArray(data) && data.length > 0) {
           setSpeciesChart(data);
           writeDashboardCache("mytrees_species_chart", data);
+          setKpis(prev => {
+            const next = mergeKpisFromCharts(prev, data, null);
+            if (!kpisLookEmpty(next)) writeDashboardCache("mytrees_kpis", next);
+            return next;
+          });
         }
       })
       .catch(err => {
@@ -459,6 +481,11 @@ function App() {
         if (Array.isArray(data) && data.length > 0) {
           setPlantingOverTime(data);
           writeDashboardCache("mytrees_planting_over_time", data);
+          setKpis(prev => {
+            const next = mergeKpisFromCharts(prev, null, data);
+            if (!kpisLookEmpty(next)) writeDashboardCache("mytrees_kpis", next);
+            return next;
+          });
         }
       })
       .catch(err => {
@@ -478,88 +505,73 @@ function App() {
   // ─── Lazy per-tab data loader ────────────────────────────────────────────────
   // Each module's data is fetched only on first visit. Cached in state thereafter.
   useEffect(() => {
+    const fetchTabJson = (path, setter) => {
+      apiFetch(path, {}, { retries: 2, timeoutMs: 120000 })
+        .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`${path} ${res.status}`))))
+        .then(setter)
+        .catch(console.error);
+    };
     const fetchTabData = async (tab) => {
       try {
         if (tab === 'outplanting-meetings' && !meetingsOutcomes) {
-          apiFetch(`/api/workflow/meetings/outcomes`)
-            .then(r => r.json()).then(setMeetingsOutcomes).catch(console.error);
-          apiFetch(`/api/workflow/outplanting`)
-            .then(r => r.json()).then(setOutplantingMetrics).catch(console.error);
+          fetchTabJson(`/api/workflow/meetings/outcomes`, setMeetingsOutcomes);
+          fetchTabJson(`/api/workflow/outplanting`, setOutplantingMetrics);
         }
         if (tab === 'outplanting-eligibility' && !eligibilityOutcomes) {
-          apiFetch(`/api/workflow/eligibility/outcomes`)
-            .then(r => r.json()).then(setEligibilityOutcomes).catch(console.error);
+          fetchTabJson(`/api/workflow/eligibility/outcomes`, setEligibilityOutcomes);
         }
         if (tab === 'outplanting-landprep' && !landprepOutcomes) {
-          apiFetch(`/api/workflow/landprep/outcomes`)
-            .then(r => r.json()).then(setLandprepOutcomes).catch(console.error);
+          fetchTabJson(`/api/workflow/landprep/outcomes`, setLandprepOutcomes);
         }
         if (tab === 'outplanting-planted' && !plantingOutcomes) {
-          apiFetch(`/api/workflow/planting/outcomes`)
-            .then(r => r.json()).then(setPlantingOutcomes).catch(console.error);
+          fetchTabJson(`/api/workflow/planting/outcomes`, setPlantingOutcomes);
         }
         if (tab === 'outplanting-survival' && !survivalOutcomes) {
-          apiFetch(`/api/workflow/survival/outcomes`)
-            .then(r => r.json()).then(setSurvivalOutcomes).catch(console.error);
+          fetchTabJson(`/api/workflow/survival/outcomes`, setSurvivalOutcomes);
         }
         if (tab === 'outplanting-fire' && !fireOutcomes) {
-          apiFetch(`/api/workflow/fire/outcomes`)
-            .then(r => r.json()).then(setFireOutcomes).catch(console.error);
+          fetchTabJson(`/api/workflow/fire/outcomes`, setFireOutcomes);
         }
         if (tab === 'nursery-seed' && !seedOutcomes) {
-          apiFetch(`/api/workflow/seed/outcomes`)
-            .then(r => r.json()).then(setSeedOutcomes).catch(console.error);
-          apiFetch(`/api/workflow/nursery`)
-            .then(r => r.json()).then(setNurseryMetrics).catch(console.error);
+          fetchTabJson(`/api/workflow/seed/outcomes`, setSeedOutcomes);
+          fetchTabJson(`/api/workflow/nursery`, setNurseryMetrics);
         }
         if (tab === 'nursery-production' && !productionOutcomes) {
-          apiFetch(`/api/workflow/nursery-production/outcomes`)
-            .then(r => r.json()).then(setProductionOutcomes).catch(console.error);
+          fetchTabJson(`/api/workflow/nursery-production/outcomes`, setProductionOutcomes);
           if (!nurseryMetrics) {
-            apiFetch(`/api/workflow/nursery`)
-              .then(r => r.json()).then(setNurseryMetrics).catch(console.error);
+            fetchTabJson(`/api/workflow/nursery`, setNurseryMetrics);
           }
         }
         if (tab === 'nursery-dispatch' && !dispatchOutcomes) {
-          apiFetch(`/api/workflow/dispatch/outcomes`)
-            .then(r => r.json()).then(setDispatchOutcomes).catch(console.error);
+          fetchTabJson(`/api/workflow/dispatch/outcomes`, setDispatchOutcomes);
           if (!nurseryMetrics) {
-            apiFetch(`/api/workflow/nursery`)
-              .then(r => r.json()).then(setNurseryMetrics).catch(console.error);
+            fetchTabJson(`/api/workflow/nursery`, setNurseryMetrics);
           }
         }
         if (tab === 'beekeeping-sites' && !sitesOutcomes) {
-          apiFetch(`/api/workflow/beekeeping/sites/outcomes`)
-            .then(r => r.json()).then(setSitesOutcomes).catch(console.error);
-          apiFetch(`/api/workflow/beekeeping`)
-            .then(r => r.json()).then(setBeekeepingMetrics).catch(console.error);
+          fetchTabJson(`/api/workflow/beekeeping/sites/outcomes`, setSitesOutcomes);
+          fetchTabJson(`/api/workflow/beekeeping`, setBeekeepingMetrics);
         }
         if (tab === 'beekeeping-trainings' && !beekeepingTrainingsOutcomes) {
-          apiFetch(`/api/workflow/beekeeping/trainings/outcomes`)
-            .then(r => r.json()).then(setBeekeepingTrainingsOutcomes).catch(console.error);
+          fetchTabJson(`/api/workflow/beekeeping/trainings/outcomes`, setBeekeepingTrainingsOutcomes);
         }
         if (tab === 'beekeeping-status' && !statusOutcomes) {
-          apiFetch(`/api/workflow/beekeeping/status/outcomes`)
-            .then(r => r.json()).then(setStatusOutcomes).catch(console.error);
+          fetchTabJson(`/api/workflow/beekeeping/status/outcomes`, setStatusOutcomes);
           if (!beekeepingMetrics) {
-            apiFetch(`/api/workflow/beekeeping`)
-              .then(r => r.json()).then(setBeekeepingMetrics).catch(console.error);
+            fetchTabJson(`/api/workflow/beekeeping`, setBeekeepingMetrics);
           }
         }
         if (tab === 'verifications-audits' && !verificationsMetrics) {
-          apiFetch(`/api/workflow/verifications`)
-            .then(r => r.json()).then(setVerificationsMetrics).catch(console.error);
+          fetchTabJson(`/api/workflow/verifications`, setVerificationsMetrics);
         }
         if (tab === 'gallery' && (!mediaList.images.length && !mediaList.audios.length)) {
-          apiFetch(`/api/media/list`)
-            .then(r => r.json()).then(setMediaList).catch(console.error);
+          fetchTabJson(`/api/media/list`, setMediaList);
         }
         if (tab === 'report') {
-          // Report may need multiple datasets — fetch anything not yet loaded
-          if (!survivalOutcomes) apiFetch(`/api/workflow/survival/outcomes`).then(r => r.json()).then(setSurvivalOutcomes).catch(console.error);
-          if (!productionOutcomes) apiFetch(`/api/workflow/nursery-production/outcomes`).then(r => r.json()).then(setProductionOutcomes).catch(console.error);
-          if (!statusOutcomes) apiFetch(`/api/workflow/beekeeping/status/outcomes`).then(r => r.json()).then(setStatusOutcomes).catch(console.error);
-          if (!fireOutcomes) apiFetch(`/api/workflow/fire/outcomes`).then(r => r.json()).then(setFireOutcomes).catch(console.error);
+          if (!survivalOutcomes) fetchTabJson(`/api/workflow/survival/outcomes`, setSurvivalOutcomes);
+          if (!productionOutcomes) fetchTabJson(`/api/workflow/nursery-production/outcomes`, setProductionOutcomes);
+          if (!statusOutcomes) fetchTabJson(`/api/workflow/beekeeping/status/outcomes`, setStatusOutcomes);
+          if (!fireOutcomes) fetchTabJson(`/api/workflow/fire/outcomes`, setFireOutcomes);
         }
       } catch (err) {
         console.error('Tab data load error:', err);

@@ -6,6 +6,7 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    # Redeploy trigger: serve KPIs from GeoPackages when Postgres is still empty.
     rootDir: backend
     envVars:
       - key: QFIELD_BASE_DIR

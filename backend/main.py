@@ -58,6 +58,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="MyTrees QField Restoration API", lifespan=lifespan)
 
+@app.get("/")
+@app.get("/health")
+@app.get("/api/health")
+def health():
+    """Liveness check used by Render and the Firebase dashboard wake-up ping."""
+    return {"status": "ok", "service": "mytrees-api"}
+
 # Enable CORS for frontend integration
 app.add_middleware(
     CORSMiddleware,
@@ -408,6 +415,11 @@ def _serialize_layer_row(df, idx, row):
             record[col] = val.strftime("%Y-%m-%d %H:%M:%S") if not pd.isnull(val) else None
         elif pd.isnull(val):
             record[col] = None
+        elif hasattr(val, "item") and not isinstance(val, (bytes, str)):
+            try:
+                record[col] = val.item()
+            except Exception:
+                record[col] = str(val)
         elif isinstance(val, (int, float, str, bool)):
             record[col] = val
         else:
@@ -423,12 +435,7 @@ def _serialize_layer_row(df, idx, row):
         msg_key = f"idx_{idx}"
 
     fid = str(record.get("fid") or msg_key)
-    return (
-        f"{msg_key}",
-        fid,
-        json.dumps(geom_geojson) if geom_geojson else None,
-        json.dumps(record),
-    )
+    return (f"{msg_key}", fid, geom_geojson, record)
 
 
 def _persist_layers_to_db():
@@ -444,7 +451,15 @@ def _persist_layers_to_db():
         _init_layer_tables(conn, db_type)
         cursor = conn.cursor()
 
-        for layer_name, table_name in _LAYER_TO_TABLE.items():
+        priority = [
+            "planting", "survival_count", "meetings", "beekeeping", "nurseries",
+            "fires", "plots_mapping", "user_tracks", "verification",
+        ]
+        layer_names = [n for n in priority if n in _LAYER_TO_TABLE] + [
+            n for n in _LAYER_TO_TABLE if n not in priority
+        ]
+        for layer_name in layer_names:
+            table_name = _LAYER_TO_TABLE[layer_name]
             try:
                 path = get_gpkg_path(layer_name)
                 df = gpd.read_file(path)
@@ -456,9 +471,13 @@ def _persist_layers_to_db():
                 elif not df.crs:
                     df.set_crs(epsg=4326, inplace=True)
 
-                rows = [_serialize_layer_row(df, idx, row) for idx, row in df.iterrows()]
+                serialized = [_serialize_layer_row(df, idx, row) for idx, row in df.iterrows()]
                 if db_type == "postgres":
-                    from psycopg2.extras import execute_values
+                    from psycopg2.extras import Json, execute_values
+                    rows = [
+                        (row_id, fid, Json(geom) if geom is not None else None, Json(props))
+                        for row_id, fid, geom, props in serialized
+                    ]
                     execute_values(
                         cursor,
                         f"""
@@ -471,9 +490,18 @@ def _persist_layers_to_db():
                             synced_at = CURRENT_TIMESTAMP
                         """,
                         rows,
-                        page_size=500,
+                        page_size=200,
                     )
                 else:
+                    rows = [
+                        (
+                            row_id,
+                            fid,
+                            json.dumps(geom) if geom is not None else None,
+                            json.dumps(props, default=str),
+                        )
+                        for row_id, fid, geom, props in serialized
+                    ]
                     cursor.executemany(
                         f"""
                         INSERT INTO {table_name} (id, fid, geometry, properties)
@@ -745,12 +773,6 @@ def debug_paths():
     }
 
 
-@app.get("/api/health")
-def health():
-    """Cheap wake-up / liveness check for the Firebase dashboard."""
-    return {"status": "ok"}
-
-
 @app.get("/api/layers")
 def list_layers():
     """List all available spatial layers."""
@@ -952,10 +974,10 @@ def _get_kpis_slow_fallback() -> dict:
     # 1. Planting Targets vs Actual
     try:
         df = load_layer("planting")
-        df["Planted"] = pd.to_numeric(df["Planted"], errors="coerce").fillna(0)
-        df["Target"] = pd.to_numeric(df["Target"], errors="coerce").fillna(0)
-        kpis["trees_planted"] = int(df["Planted"].sum())
-        kpis["trees_target"] = int(df["Target"].sum())
+        if "Planted" in df.columns:
+            kpis["trees_planted"] = int(pd.to_numeric(df["Planted"], errors="coerce").fillna(0).sum())
+        if "Target" in df.columns:
+            kpis["trees_target"] = int(pd.to_numeric(df["Target"], errors="coerce").fillna(0).sum())
     except Exception as e:
         logger.warning(f"Error calculating planting KPIs: {e}")
 
@@ -1031,24 +1053,16 @@ def _get_kpis_slow_fallback() -> dict:
 
 @app.get("/api/kpis")
 def get_kpis():
-    """Compute high-level Key Performance Indicators across datasets.
-    Optimized path retrieves metadata/counts directly from SQL, bypassing shapely reprojections.
-    """
-    db_has_data = False
+    """Headline KPIs. GeoPackages are the source of truth until Postgres actually has rows."""
+    gpkg_kpis = _get_kpis_slow_fallback()
     try:
-        planting_count = _get_db_count("mytrees_planting")
-        if planting_count > 0:
-            db_has_data = True
-    except Exception:
-        pass
-
-    if db_has_data:
-        try:
-            return _get_kpis_from_db()
-        except Exception as e:
-            logger.warning(f"Failed to load KPIs from database: {e}. Falling back to slow GPKG path.")
-
-    return _get_kpis_slow_fallback()
+        if _get_db_count("mytrees_planting") > 0:
+            db_kpis = _get_kpis_from_db()
+            if int(db_kpis.get("trees_planted") or 0) > int(gpkg_kpis.get("trees_planted") or 0):
+                return db_kpis
+    except Exception as e:
+        logger.warning(f"Failed to load KPIs from database: {e}. Using GeoPackage values.")
+    return gpkg_kpis
 
 @app.get("/api/charts/survival_by_species")
 def get_survival_by_species():
@@ -3878,6 +3892,7 @@ def _startup_sync():
         logger.info(f"[STARTUP SYNC] {result}")
         if result.get("status") in ("skipped", "error"):
             _warm_dashboard_cache()
+            threading.Thread(target=_persist_layers_to_db, daemon=True).start()
     except Exception as e:
         logger.error(f"[STARTUP SYNC] Unexpected error: {e}")
         try:
