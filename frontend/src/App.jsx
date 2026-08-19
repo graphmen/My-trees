@@ -296,9 +296,9 @@ function App() {
   const pollIntervalRef = React.useRef(null);
   const spatialCacheRef = React.useRef({});
   
-  const [outplantingMetrics, setOutplantingMetrics] = useState(null);
-  const [nurseryMetrics, setNurseryMetrics] = useState(null);
-  const [beekeepingMetrics, setBeekeepingMetrics] = useState(null);
+  const [outplantingMetrics, setOutplantingMetrics] = useState(() => readDashboardCache("mytrees_outplanting", null));
+  const [nurseryMetrics, setNurseryMetrics] = useState(() => readDashboardCache("mytrees_nursery", null));
+  const [beekeepingMetrics, setBeekeepingMetrics] = useState(() => readDashboardCache("mytrees_beekeeping", null));
   const [verificationsMetrics, setVerificationsMetrics] = useState(null);
   const [expandedAccordion, setExpandedAccordion] = useState('outplanting');
   const [selectedOfficer, setSelectedOfficer] = useState('All');
@@ -475,10 +475,20 @@ function App() {
         return res.json();
       })
       .then(data => {
-        if (!kpisLookEmpty(data)) {
-          setKpis(data);
-          writeDashboardCache("mytrees_kpis", data);
-        }
+        setKpis(prev => {
+          const next = { ...prev };
+          Object.keys(data || {}).forEach((key) => {
+            const incoming = Number(data[key]);
+            const current = Number(prev[key]);
+            if (Number.isFinite(incoming) && incoming > (Number.isFinite(current) ? current : 0)) {
+              next[key] = data[key];
+            } else if ((current || 0) === 0 && data[key] != null && data[key] !== 0) {
+              next[key] = data[key];
+            }
+          });
+          writeDashboardCache("mytrees_kpis", next);
+          return next;
+        });
         setConnectionStatus('connected');
       })
       .catch(err => {
@@ -532,9 +542,18 @@ function App() {
       });
 
     const applyCompiled = (outplanting, nursery, beekeeping) => {
-      if (outplanting) setOutplantingMetrics(outplanting);
-      if (nursery) setNurseryMetrics(nursery);
-      if (beekeeping) setBeekeepingMetrics(beekeeping);
+      if (outplanting) {
+        setOutplantingMetrics(outplanting);
+        writeDashboardCache("mytrees_outplanting", outplanting);
+      }
+      if (nursery) {
+        setNurseryMetrics(nursery);
+        writeDashboardCache("mytrees_nursery", nursery);
+      }
+      if (beekeeping) {
+        setBeekeepingMetrics(beekeeping);
+        writeDashboardCache("mytrees_beekeeping", beekeeping);
+      }
       setKpis(prev => {
         const next = applyWorkflowMetrics(prev, outplanting, nursery, beekeeping);
         if (!kpisLookEmpty(next) || next.trees_target || next.nursery_seedlings || next.total_hives) {

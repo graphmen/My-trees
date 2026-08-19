@@ -204,6 +204,20 @@ def parse_quantity_kg(val) -> float:
         return num * 0.02  # Estimate 20g per pod
     return num
 
+def parse_burnt_hectares(val) -> float:
+    """QField stores burnt area as '100m*100m', '2ha', or a plain number."""
+    import re
+    area_str = str(val or "").lower().strip()
+    if not area_str or area_str in ("none", "nan", "<na>", ""):
+        return 0.0
+    if "100m" in area_str:
+        return 1.0
+    if "ha" in area_str:
+        digits = re.findall(r"[-+]?\d*\.\d+|\d+", area_str)
+        return float(digits[0]) if digits else 0.0
+    num = pd.to_numeric(area_str, errors="coerce")
+    return float(num) if pd.notna(num) else 0.0
+
 def clean_field(val, default=None):
     if pd.isnull(val) or val == 'None' or val == 'nan':
         return default
@@ -325,17 +339,47 @@ def get_gpkg_path(layer_name: str) -> str:
 
 # ---------------------------------------------------------------------------
 # In-memory layer cache + fast DB-backed loader
-# Priority: 1) in-memory cache  2) database (Postgres/SQLite)  3) .gpkg disk
 # ---------------------------------------------------------------------------
-_layer_cache: dict = {}
+from collections import OrderedDict
+
+_layer_cache: OrderedDict = OrderedDict()
 _layer_locks: dict = {}
 _layer_locks_lock = threading.Lock()
+_MAX_LAYER_CACHE = 6
+_MAP_LAYERS = {
+    "planting", "plots_mapping", "plots_assessment", "plot_selection",
+    "fires", "verification", "land_preparation", "nurseries", "beekeeping",
+    "red_boundary", "wards", "clusters", "user_tracks",
+}
 
 def get_layer_lock(layer_name: str) -> threading.Lock:
     with _layer_locks_lock:
         if layer_name not in _layer_locks:
             _layer_locks[layer_name] = threading.Lock()
         return _layer_locks[layer_name]
+
+def _read_gpkg(path: str, need_geom: bool = False):
+    """Read a GeoPackage. Skip geometries unless a map actually needs them."""
+    if need_geom:
+        try:
+            return gpd.read_file(path, engine="pyogrio")
+        except Exception:
+            return gpd.read_file(path)
+    try:
+        frame = gpd.read_file(path, engine="pyogrio", read_geometry=False)
+    except TypeError:
+        frame = gpd.read_file(path, ignore_geometry=True)
+    except Exception:
+        frame = gpd.read_file(path, ignore_geometry=True)
+    if not isinstance(frame, gpd.GeoDataFrame):
+        frame = gpd.GeoDataFrame(frame)
+    return frame
+
+def _cache_put(cache_key, gdf):
+    _layer_cache[cache_key] = gdf
+    _layer_cache.move_to_end(cache_key)
+    while len(_layer_cache) > _MAX_LAYER_CACHE:
+        _layer_cache.popitem(last=False)
 
 # Map canonical layer names to Postgres table names
 _LAYER_TO_TABLE = {name: f"mytrees_{name}" for name in GPKG_MAPPING}
@@ -382,6 +426,12 @@ def _init_layer_tables(conn, db_type: str):
                     synced_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            try:
+                cursor.execute("SAVEPOINT gin_idx")
+                cursor.execute(f"CREATE INDEX IF NOT EXISTS {table_name}_props_gin ON {table_name} USING GIN (properties);")
+                cursor.execute("RELEASE SAVEPOINT gin_idx")
+            except Exception:
+                cursor.execute("ROLLBACK TO SAVEPOINT gin_idx")
         else:
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS {table_name} (
@@ -462,60 +512,67 @@ def _persist_layers_to_db():
             table_name = _LAYER_TO_TABLE[layer_name]
             try:
                 path = get_gpkg_path(layer_name)
-                df = gpd.read_file(path)
+                need_geom = layer_name in _MAP_LAYERS
+                df = _read_gpkg(path, need_geom=need_geom)
                 if df.empty:
                     logger.info(f"[DB] Layer '{layer_name}' is empty. Skipping.")
                     continue
-                if df.crs and df.crs.to_epsg() != 4326:
-                    df = df.to_crs(epsg=4326)
-                elif not df.crs:
-                    df.set_crs(epsg=4326, inplace=True)
+                if need_geom:
+                    if df.crs and df.crs.to_epsg() != 4326:
+                        df = df.to_crs(epsg=4326)
+                    elif not df.crs:
+                        df.set_crs(epsg=4326, inplace=True)
 
-                serialized = [_serialize_layer_row(df, idx, row) for idx, row in df.iterrows()]
-                if db_type == "postgres":
-                    from psycopg2.extras import Json, execute_values
-                    rows = [
-                        (row_id, fid, Json(geom) if geom is not None else None, Json(props))
-                        for row_id, fid, geom, props in serialized
-                    ]
-                    execute_values(
-                        cursor,
-                        f"""
-                        INSERT INTO {table_name} (id, fid, geometry, properties)
-                        VALUES %s
-                        ON CONFLICT (id) DO UPDATE SET
-                            fid = EXCLUDED.fid,
-                            geometry = EXCLUDED.geometry,
-                            properties = EXCLUDED.properties,
-                            synced_at = CURRENT_TIMESTAMP
-                        """,
-                        rows,
-                        page_size=200,
-                    )
-                else:
-                    rows = [
-                        (
-                            row_id,
-                            fid,
-                            json.dumps(geom) if geom is not None else None,
-                            json.dumps(props, default=str),
+                chunk_size = 400
+                upserted = 0
+                for start in range(0, len(df), chunk_size):
+                    chunk = df.iloc[start:start + chunk_size]
+                    serialized = [_serialize_layer_row(chunk, idx, row) for idx, row in chunk.iterrows()]
+                    if db_type == "postgres":
+                        from psycopg2.extras import Json, execute_values
+                        rows = [
+                            (row_id, fid, Json(geom) if geom is not None else None, Json(props))
+                            for row_id, fid, geom, props in serialized
+                        ]
+                        execute_values(
+                            cursor,
+                            f"""
+                            INSERT INTO {table_name} (id, fid, geometry, properties)
+                            VALUES %s
+                            ON CONFLICT (id) DO UPDATE SET
+                                fid = EXCLUDED.fid,
+                                geometry = EXCLUDED.geometry,
+                                properties = EXCLUDED.properties,
+                                synced_at = CURRENT_TIMESTAMP
+                            """,
+                            rows,
+                            page_size=200,
                         )
-                        for row_id, fid, geom, props in serialized
-                    ]
-                    cursor.executemany(
-                        f"""
-                        INSERT INTO {table_name} (id, fid, geometry, properties)
-                        VALUES (?, ?, ?, ?)
-                        ON CONFLICT(id) DO UPDATE SET
-                            fid = excluded.fid,
-                            geometry = excluded.geometry,
-                            properties = excluded.properties,
-                            synced_at = CURRENT_TIMESTAMP
-                        """,
-                        rows,
-                    )
-                conn.commit()
-                logger.info(f"[DB] Upserted {len(rows)} rows into {table_name}.")
+                    else:
+                        rows = [
+                            (
+                                row_id,
+                                fid,
+                                json.dumps(geom) if geom is not None else None,
+                                json.dumps(props, default=str),
+                            )
+                            for row_id, fid, geom, props in serialized
+                        ]
+                        cursor.executemany(
+                            f"""
+                            INSERT INTO {table_name} (id, fid, geometry, properties)
+                            VALUES (?, ?, ?, ?)
+                            ON CONFLICT(id) DO UPDATE SET
+                                fid = excluded.fid,
+                                geometry = excluded.geometry,
+                                properties = excluded.properties,
+                                synced_at = CURRENT_TIMESTAMP
+                            """,
+                            rows,
+                        )
+                    conn.commit()
+                    upserted += len(rows)
+                logger.info(f"[DB] Upserted {upserted} rows into {table_name}.")
             except HTTPException:
                 logger.info(f"[DB] No GeoPackage on disk for '{layer_name}'. Skipping.")
             except Exception as e:
@@ -527,20 +584,18 @@ def _persist_layers_to_db():
     except Exception as e:
         logger.error(f"[DB] Persist aborted: {e}", exc_info=True)
 
-    _prewarm_common_layers()
+    global _layer_cache
+    _layer_cache = OrderedDict()
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
 
 
 def _prewarm_common_layers():
-    prewarm_layers = [
-        "plots_assessment", "land_preparation", "seed_collection", "seed_bank",
-        "nurseries", "nurseries_verification", "red_boundary", "plots_mapping"
-    ]
-    for layer in prewarm_layers:
-        try:
-            logger.info(f"[CACHE PREWARM] Pre-warming layer '{layer}'...")
-            load_layer(layer)
-        except Exception as e:
-            logger.warning(f"[CACHE PREWARM] Failed to pre-warm layer '{layer}': {e}")
+    """No-op: pre-warming all GeoPackages blows Render free-tier RAM."""
+    return
 
 def _get_db_count(table: str) -> int:
     """Helper to get record count from DB without loading full data."""
@@ -632,26 +687,27 @@ def load_layer(layer_name: str, need_geom: bool = False) -> gpd.GeoDataFrame:
             logger.info(f"[COMPARE] '{layer_name}': DB={db_count} rows, GPKG={gpkg_count} rows")
 
             if db_count > gpkg_count and db_count > 0:
-                # DB has more data — load full DB (Kafka-synced, more recent)
                 gdf = _load_from_db(layer_name, need_geom=need_geom)
                 if gdf is not None and not gdf.empty:
-                    _layer_cache[cache_key] = gdf
+                    if not need_geom:
+                        _cache_put(cache_key, gdf)
                     logger.info(f"[CACHE] '{layer_name}' (need_geom={need_geom}) from DB ({db_count} rows > gpkg {gpkg_count} rows).")
-                    return _layer_cache[cache_key].copy()
+                    return gdf.copy()
 
-            # gpkg has equal/more rows, or DB load failed — use gpkg as source of truth
             if gpkg_path:
-                logger.info(f"[CACHE] Loading '{layer_name}' from .gpkg (gpkg={gpkg_count} >= db={db_count})...")
-                gdf = gpd.read_file(gpkg_path)
-                _layer_cache[cache_key] = gdf
+                logger.info(f"[CACHE] Loading '{layer_name}' from .gpkg (geom={need_geom}, gpkg={gpkg_count}, db={db_count})...")
+                gdf = _read_gpkg(gpkg_path, need_geom=need_geom)
+                if not need_geom:
+                    _cache_put(cache_key, gdf)
                 logger.info(f"[CACHE] '{layer_name}' loaded from .gpkg ({len(gdf)} rows).")
-                return _layer_cache[cache_key].copy()
+                return gdf.copy()
 
             # Final fallback: try DB regardless of count
             gdf = _load_from_db(layer_name, need_geom=need_geom)
             if gdf is not None and not gdf.empty:
-                _layer_cache[cache_key] = gdf
-                return _layer_cache[cache_key].copy()
+                if not need_geom:
+                    _cache_put(cache_key, gdf)
+                return gdf.copy()
 
             raise FileNotFoundError(f"Layer '{layer_name}' not found in DB or .gpkg disk.")
 
@@ -1053,9 +1109,23 @@ def _get_kpis_slow_fallback() -> dict:
     # 6. User Patrols Distance
     try:
         df = load_layer("user_tracks")
-        df["length_km"] = pd.to_numeric(df["length_km"], errors="coerce").fillna(0)
-        df["Distance"] = pd.to_numeric(df["Distance"], errors="coerce").fillna(0)
-        kpis["patrol_distance_km"] = round(float(df["length_km"].sum() or df["Distance"].sum()), 1)
+        distance = 0.0
+        for col in ("length_km", "Distance", "length", "Length", "distance", "shape_length"):
+            if col in df.columns:
+                distance = float(pd.to_numeric(df[col], errors="coerce").fillna(0).sum())
+                if distance:
+                    break
+        if not distance:
+            df_geom = load_layer("user_tracks", need_geom=True)
+            if df_geom is not None and not df_geom.empty and df_geom.geometry is not None:
+                try:
+                    if df_geom.crs is None:
+                        df_geom = df_geom.set_crs(epsg=4326)
+                    metric = df_geom.to_crs(epsg=32735)
+                    distance = float(metric.geometry.length.sum()) / 1000.0
+                except Exception:
+                    distance = 0.0
+        kpis["patrol_distance_km"] = round(distance, 1)
     except Exception as e:
         logger.warning(f"Error calculating patrol KPI: {e}")
 
@@ -2280,16 +2350,7 @@ def get_fire_outcomes():
         for idx, row in df_confirmed.iterrows():
             # Burnt Area parsing (e.g. "100m*100m" -> 1.0 hectare, or numeric value)
             area_str = str(row.get("Burnt Area", "0.0")).lower().strip()
-            hectares = 0.0
-            if "100m" in area_str:
-                hectares = 1.0  # 100m x 100m = 10,000 sq m = 1 hectare
-            else:
-                try:
-                    hectares = float(pd.to_numeric(area_str, errors="coerce"))
-                    if pd.isna(hectares):
-                        hectares = 0.0
-                except:
-                    hectares = 0.0
+            hectares = parse_burnt_hectares(area_str)
             total_hectares += hectares
             
             total_trees = pd.to_numeric(row.get("TotalTrees"), errors="coerce")
@@ -2633,11 +2694,16 @@ def get_outplanting_workflow():
         df = load_layer("fires")
 
         result["fire"]["incidents"] = int(len(df))
-        df["Burnt Area"] = pd.to_numeric(df["Burnt Area"], errors="coerce").fillna(0.0)
-        df["TotalTrees"] = pd.to_numeric(df["TotalTrees"], errors="coerce").fillna(0)
-        df["Survival"] = pd.to_numeric(df["Survival"], errors="coerce").fillna(0)
-        result["fire"]["hectares_lost"] = round(float(df["Burnt Area"].sum()), 2)
-        result["fire"]["trees_lost"] = int((df["TotalTrees"] - df["Survival"]).sum())
+        if "Burnt Area" in df.columns:
+            result["fire"]["hectares_lost"] = round(float(df["Burnt Area"].map(parse_burnt_hectares).sum()), 2)
+        elif "hectares" in df.columns:
+            result["fire"]["hectares_lost"] = round(float(pd.to_numeric(df["hectares"], errors="coerce").fillna(0).sum()), 2)
+        trees = pd.to_numeric(df["TotalTrees"], errors="coerce").fillna(0) if "TotalTrees" in df.columns else 0
+        alive = pd.to_numeric(df["Survival"], errors="coerce").fillna(0) if "Survival" in df.columns else 0
+        try:
+            result["fire"]["trees_lost"] = int((trees - alive).sum())
+        except Exception:
+            result["fire"]["trees_lost"] = 0
         
         df["Cause_Mapped"] = df["Cause"].astype(str).map(FIRE_CAUSE_MAPPING).fillna("Unknown")
         cause_counts = df["Cause_Mapped"].value_counts().to_dict()
