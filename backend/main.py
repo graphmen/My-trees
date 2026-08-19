@@ -116,7 +116,16 @@ async def cache_middleware(request: Request, call_next):
                 yield body
             response.body_iterator = async_generator()
 
-            set_cached_response(path, body)
+            should_cache = True
+            if path == "/api/kpis":
+                try:
+                    payload = json.loads(body.decode("utf-8"))
+                    if int(payload.get("trees_planted") or 0) == 0 and int(payload.get("meetings_count") or 0) == 0:
+                        should_cache = False
+                except Exception:
+                    should_cache = False
+            if should_cache:
+                set_cached_response(path, body)
         return response
 
     return await call_next(request)
@@ -785,7 +794,6 @@ def get_geojson(layer_name: str):
         logger.error(f"Error serving layer {layer_name}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/kpis")
 def _get_kpis_from_db() -> dict:
     """Run optimized database-only queries for KPIs to bypass expensive pandas loading."""
     conn, db_type = _get_connection()
