@@ -168,6 +168,190 @@ function kpisLookEmpty(kpis) {
   return !kpis || ((Number(kpis.trees_planted) || 0) === 0 && (Number(kpis.meetings_count) || 0) === 0);
 }
 
+function compiledHasNurserySignal(nursery) {
+  if (!nursery) return false;
+  const kg = Number(nursery.seed_collection?.total_collected_kg || 0);
+  const prod = nursery.nursery_production || {};
+  const disp = nursery.seedling_dispatch || {};
+  return kg > 0 || Number(prod.pocketed || 0) > 0 || Number(prod.germinated || 0) > 0
+    || Number(prod.ready || 0) > 0 || Number(disp.distributed || 0) > 0;
+}
+
+function compiledHasBeeSignal(bee) {
+  if (!bee) return false;
+  return Number(bee.hive_colonization?.total_hives || 0) > 0
+    || Number(bee.apiary_suitability?.total_evaluated_sites || 0) > 0
+    || Number(bee.trainings?.conducted || 0) > 0;
+}
+
+function avgScore(scores) {
+  const vals = [scores?.flowers, scores?.water, scores?.sunlight, scores?.security]
+    .map((v) => Number(v) || 0);
+  return Math.round((vals.reduce((a, b) => a + b, 0) / 4) * 10) / 10;
+}
+
+function withBeeSites(outcomes, compiled) {
+  if (outcomes?.summary) {
+    return {
+      ...outcomes,
+      logs: outcomes.logs || [],
+      summary: {
+        total_evaluated_sites: 0,
+        suitable_sites: 0,
+        needs_improvement: 0,
+        total_waxed: 0,
+        avg_suitability_score: 0,
+        average_scores: { flowers: 0, water: 0, sunlight: 0, security: 0 },
+        by_accessibility: {},
+        by_condition: {},
+        by_ward: {},
+        ...outcomes.summary,
+        average_scores: {
+          flowers: 0, water: 0, sunlight: 0, security: 0,
+          ...(outcomes.summary.average_scores || {}),
+        },
+      },
+    };
+  }
+  const sites = compiled?.apiary_suitability;
+  if (!sites && !outcomes) return null;
+  const scores = sites?.average_scores || { flowers: 0, water: 0, sunlight: 0, security: 0 };
+  return {
+    summary: {
+      total_evaluated_sites: Number(sites?.total_evaluated_sites) || 0,
+      suitable_sites: Number(sites?.total_evaluated_sites) || 0,
+      needs_improvement: 0,
+      total_waxed: 0,
+      avg_suitability_score: avgScore(scores),
+      average_scores: scores,
+      by_accessibility: {},
+      by_condition: {},
+      by_ward: {},
+    },
+    logs: [],
+    detail: outcomes?.detail,
+  };
+}
+
+function withBeeTrainings(outcomes, compiled) {
+  if (outcomes?.summary) {
+    return { ...outcomes, trainings: outcomes.trainings || [] };
+  }
+  const train = compiled?.trainings;
+  if (!train && !outcomes) return null;
+  return {
+    summary: {
+      trainings_conducted: Number(train?.conducted) || 0,
+      attendants_total: Number(train?.attendants_total) || 0,
+      attendants_male: Number(train?.by_gender?.male) || 0,
+      attendants_female: Number(train?.by_gender?.female) || 0,
+    },
+    trainings: [],
+    detail: outcomes?.detail,
+  };
+}
+
+function withBeeStatus(outcomes, compiled) {
+  if (outcomes?.summary) {
+    return { ...outcomes, logs: outcomes.logs || [] };
+  }
+  const hive = compiled?.hive_colonization;
+  if (!hive && !outcomes) return null;
+  return {
+    summary: {
+      total_hives: Number(hive?.total_hives) || 0,
+      colonized: Number(hive?.colonized) || 0,
+      uncolonized: Number(hive?.uncolonized) || 0,
+      decolonized: Number(hive?.decolonized) || 0,
+      total_honey_yield_kg: 0,
+      by_hive_type: hive?.types || {},
+      by_bee_type: {},
+      by_quality: hive?.quality || {},
+      by_ward: {},
+    },
+    logs: [],
+    detail: outcomes?.detail,
+  };
+}
+
+function withSeedOutcomes(outcomes, compiled) {
+  if (outcomes?.summary) {
+    return { ...outcomes, logs: outcomes.logs || [], seedbanks: outcomes.seedbanks || [] };
+  }
+  const seed = compiled?.seed_collection;
+  if (!seed && !outcomes) return null;
+  const bySpecies = {};
+  (seed?.by_species || []).forEach((row) => {
+    bySpecies[row.species] = row.quantity_kg;
+  });
+  return {
+    summary: {
+      total_monitored_trees: 0,
+      valid_records: 0,
+      total_collected_kg: Number(seed?.total_collected_kg) || 0,
+      unique_collectors: 0,
+      by_species: bySpecies,
+      by_region: seed?.by_region || {},
+      by_phenology: {},
+      by_method: {},
+      by_quality: {},
+      by_soil: {},
+      by_landuse: {},
+    },
+    seedbanks: [],
+    logs: [],
+    detail: outcomes?.detail,
+  };
+}
+
+function withProductionOutcomes(outcomes, compiled) {
+  if (outcomes?.summary) {
+    return { ...outcomes, audits: outcomes.audits || [] };
+  }
+  const prod = compiled?.nursery_production;
+  if (!prod && !outcomes) return null;
+  const byHub = {};
+  (prod?.inventories || []).forEach((n) => {
+    byHub[n.nursery] = { pocketed: n.pocketed, ready: n.ready, germinated: n.germinated };
+  });
+  return {
+    summary: {
+      total_pocketed: Number(prod?.pocketed) || 0,
+      total_germinated: Number(prod?.germinated) || 0,
+      total_ready: Number(prod?.ready) || 0,
+      germination_rate_percent: Number(prod?.germination_rate) || 0,
+      by_hub: byHub,
+      by_gender: {},
+      total_audits: 0,
+      by_work_rate: {},
+      by_completion: {},
+    },
+    audits: [],
+    detail: outcomes?.detail,
+  };
+}
+
+function withDispatchOutcomes(outcomes, compiled) {
+  if (outcomes?.summary) {
+    return { ...outcomes, dispatch: outcomes.dispatch || [] };
+  }
+  const disp = compiled?.seedling_dispatch;
+  if (!disp && !outcomes) return null;
+  return {
+    summary: {
+      total_distributed: Number(disp?.distributed) || 0,
+      total_ready_remaining: Number(disp?.remaining) || 0,
+      active_recipients: 0,
+      by_nursery: {},
+      by_ward: {},
+      by_program: {},
+      timeline: [],
+    },
+    dispatch: [],
+    detail: outcomes?.detail,
+  };
+}
+
 function applyWorkflowMetrics(prev, outplanting, nursery, beekeeping) {
   const next = { ...prev };
   if (outplanting?.planting) {
@@ -564,12 +748,22 @@ function App() {
         writeDashboardCache("mytrees_outplanting", outplanting);
       }
       if (nursery) {
-        setNurseryMetrics(nursery);
-        writeDashboardCache("mytrees_nursery", nursery);
+        setNurseryMetrics(prev => {
+          if (compiledHasNurserySignal(nursery) || !compiledHasNurserySignal(prev)) {
+            writeDashboardCache("mytrees_nursery", nursery);
+            return nursery;
+          }
+          return prev;
+        });
       }
       if (beekeeping) {
-        setBeekeepingMetrics(beekeeping);
-        writeDashboardCache("mytrees_beekeeping", beekeeping);
+        setBeekeepingMetrics(prev => {
+          if (compiledHasBeeSignal(beekeeping) || !compiledHasBeeSignal(prev)) {
+            writeDashboardCache("mytrees_beekeeping", beekeeping);
+            return beekeeping;
+          }
+          return prev;
+        });
       }
       setKpis(prev => {
         const next = applyWorkflowMetrics(prev, outplanting, nursery, beekeeping);
@@ -636,9 +830,37 @@ function App() {
   useEffect(() => {
     const fetchTabJson = (path, setter) => {
       apiFetch(path, {}, { retries: 2, timeoutMs: 180000 })
-        .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`${path} ${res.status}`))))
-        .then(setter)
-        .catch(console.error);
+        .then(async (res) => {
+          const data = await res.json().catch(() => null);
+          if (res.ok && data) {
+            setter(data);
+            return;
+          }
+          setter({
+            detail: (data && (data.detail || data.message)) || `${path} failed (${res.status})`,
+            summary: null,
+            logs: [],
+            trainings: [],
+            seedbanks: [],
+            audits: [],
+            dispatch: [],
+            verifications: [],
+            officers: [],
+          });
+        })
+        .catch((err) => {
+          setter({
+            detail: err.message || String(err),
+            summary: null,
+            logs: [],
+            trainings: [],
+            seedbanks: [],
+            audits: [],
+            dispatch: [],
+            verifications: [],
+            officers: [],
+          });
+        });
     };
     const fetchTabData = async (tab) => {
       try {
@@ -2226,30 +2448,25 @@ function App() {
   };
 
   const renderBeekeepingSitesDashboard = () => {
-    if (!sitesOutcomes || !sitesOutcomes.summary) {
+    const resolved = withBeeSites(sitesOutcomes, beekeepingMetrics);
+    if (!resolved || !resolved.summary) {
       return (
         <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' }}>
           <div style={{ color: 'var(--text-muted)', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <RefreshCw className="active-pulse" size={18} /> {sitesOutcomes && sitesOutcomes.detail ? (
-              <span style={{ color: '#ef4444', fontWeight: 600 }}>Error: {sitesOutcomes.detail}</span>
-            ) : (
-              <>
-                <RefreshCw className="active-pulse" size={18} /> Loading Apiary Site Assessment Outcomes...
-              </>
-            )}
-          
+            <RefreshCw className="active-pulse" size={18} /> Loading Apiary Site Assessment Outcomes...
           </div>
         </div>
       );
     }
 
-    const { summary, logs } = sitesOutcomes;
+    const { summary, logs = [] } = resolved;
+    const scores = summary.average_scores || {};
 
     const criteriaData = [
-      { name: 'Flora/Flowers', score: summary.average_scores.flowers, fill: '#10b981' },
-      { name: 'Water Source', score: summary.average_scores.water, fill: '#3b82f6' },
-      { name: 'Sunlight', score: summary.average_scores.sunlight, fill: '#f59e0b' },
-      { name: 'Security/Access', score: summary.average_scores.security, fill: '#ef4444' }
+      { name: 'Flora/Flowers', score: scores.flowers || 0, fill: '#10b981' },
+      { name: 'Water Source', score: scores.water || 0, fill: '#3b82f6' },
+      { name: 'Sunlight', score: scores.sunlight || 0, fill: '#f59e0b' },
+      { name: 'Security/Access', score: scores.security || 0, fill: '#ef4444' }
     ];
 
     const accessibilityData = Object.entries(summary.by_accessibility || {}).map(([key, val]) => ({
@@ -2374,7 +2591,7 @@ function App() {
             </div>
             <div>
               <span className="kpi-label">Hives Waxed</span>
-              <h3 style={{ margin: '2px 0 0 0', fontSize: '20px', fontWeight: 800 }}>{summary.total_evaluated_sites - (summary.total_evaluated_sites - 100)}</h3>
+              <h3 style={{ margin: '2px 0 0 0', fontSize: '20px', fontWeight: 800 }}>{summary.total_waxed || 0}</h3>
               <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Scent-primed for bees</span>
             </div>
           </div>
@@ -2471,7 +2688,7 @@ function App() {
           gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
           gap: '20px'
         }}>
-          {logs.map((log) => (
+          {logs.slice(0, 80).map((log) => (
             <div key={log.id} className="glass-panel" style={{
               padding: '20px',
               display: 'flex',
@@ -2579,24 +2796,18 @@ function App() {
   };
 
   const renderBeekeepingTrainingsDashboard = () => {
-    if (!beekeepingTrainingsOutcomes || !beekeepingTrainingsOutcomes.summary) {
+    const resolved = withBeeTrainings(beekeepingTrainingsOutcomes, beekeepingMetrics);
+    if (!resolved || !resolved.summary) {
       return (
         <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' }}>
           <div style={{ color: 'var(--text-muted)', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <RefreshCw className="active-pulse" size={18} /> {beekeepingTrainingsOutcomes && beekeepingTrainingsOutcomes.detail ? (
-              <span style={{ color: '#ef4444', fontWeight: 600 }}>Error: {beekeepingTrainingsOutcomes.detail}</span>
-            ) : (
-              <>
-                <RefreshCw className="active-pulse" size={18} /> Loading Beekeeping Trainings Outcomes...
-              </>
-            )}
-          
+            <RefreshCw className="active-pulse" size={18} /> Loading Beekeeping Trainings Outcomes...
           </div>
         </div>
       );
     }
 
-    const { summary, trainings } = beekeepingTrainingsOutcomes;
+    const { summary, trainings = [] } = resolved;
     const roundPercent = (value, total) => total > 0 ? Math.round((value / total) * 100) : 0;
 
     const genderData = [
@@ -2604,8 +2815,8 @@ function App() {
       { name: 'Male Trainees', value: summary.attendants_male, fill: '#74614a' }
     ];
 
-    const chartDataTrainings = trainings.map(t => ({
-      name: t.title.length > 25 ? t.title.substring(0, 22) + '...' : t.title,
+    const chartDataTrainings = (trainings || []).map(t => ({
+      name: (t.title || 'Training').length > 25 ? (t.title || '').substring(0, 22) + '...' : (t.title || 'Training'),
       attendants: t.attendants_total,
       female: t.attendants_female,
       male: t.attendants_male
@@ -2813,7 +3024,7 @@ function App() {
           gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
           gap: '20px'
         }}>
-          {trainings.map((train) => (
+          {(trainings || []).slice(0, 80).map((train) => (
             <div key={train.id} className="glass-panel" style={{
               padding: '20px',
               display: 'flex',
@@ -2865,31 +3076,25 @@ function App() {
   };
 
   const renderBeekeepingStatusDashboard = () => {
-    if (!statusOutcomes || !statusOutcomes.summary) {
+    const resolved = withBeeStatus(statusOutcomes, beekeepingMetrics);
+    if (!resolved || !resolved.summary) {
       return (
         <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' }}>
           <div style={{ color: 'var(--text-muted)', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <RefreshCw className="active-pulse" size={18} /> {statusOutcomes && statusOutcomes.detail ? (
-              <span style={{ color: '#ef4444', fontWeight: 600 }}>Error: {statusOutcomes.detail}</span>
-            ) : (
-              <>
-                <RefreshCw className="active-pulse" size={18} /> Loading Hive Colonization Outcomes...
-              </>
-            )}
-          
+            <RefreshCw className="active-pulse" size={18} /> Loading Hive Colonization Outcomes...
           </div>
         </div>
       );
     }
 
-    const { summary, logs } = statusOutcomes;
+    const { summary, logs = [] } = resolved;
     const roundPercent = (value, total) => total > 0 ? Math.round((value / total) * 100) : 0;
 
-    const sortedLogs = [...logs].sort((a, b) => {
+    const sortedLogs = [...(logs || [])].sort((a, b) => {
       const aPhoto = a.photo_1 ? 1 : 0;
       const bPhoto = b.photo_1 ? 1 : 0;
       if (bPhoto !== aPhoto) return bPhoto - aPhoto;
-      return b.honey_yield_kg - a.honey_yield_kg;
+      return (Number(b.honey_yield_kg) || 0) - (Number(a.honey_yield_kg) || 0);
     });
 
     const colonizationData = [
@@ -3243,7 +3448,7 @@ function App() {
       );
     }
 
-    const verifications = verificationsMetrics.verifications || [];
+    const verifications = (verificationsMetrics.verifications || []).slice(0, 150);
     const officersList = verificationsMetrics.officers || [];
     
     // KPIs calculations
@@ -3536,7 +3741,7 @@ function App() {
           gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
           gap: '20px'
         }}>
-          {filteredAudits.map((v) => {
+          {filteredAudits.slice(0, 80).map((v) => {
             const photoUrl = getMediaUrl(v.photo, 'image');
             const audioUrl = getMediaUrl(v.audio, 'audio');
             const typeColor = v.type === 'Out-Planting Audit' ? '#407e52' : v.type === 'Nursery Verification' ? '#f59e0b' : '#3b82f6';
@@ -3565,7 +3770,7 @@ function App() {
                     }}>
                       {v.type}
                     </span>
-                    <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 600 }}>{v.date}</span>
+                    <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 600 }}>{formatDisplayDate(v.date) || v.date}</span>
                   </div>
                   <h3 style={{ margin: '8px 0 2px 0', fontSize: '16px', fontWeight: 800, color: 'var(--text-primary)' }}>
                     Audited: {v.grower}
@@ -5673,24 +5878,18 @@ function App() {
   };
 
   const renderSeedDashboard = () => {
-    if (!seedOutcomes || !seedOutcomes.summary) {
+    const resolved = withSeedOutcomes(seedOutcomes, nurseryMetrics);
+    if (!resolved || !resolved.summary) {
       return (
         <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' }}>
           <div style={{ color: 'var(--text-muted)', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <RefreshCw className="active-pulse" size={18} /> {seedOutcomes && seedOutcomes.detail ? (
-              <span style={{ color: '#ef4444', fontWeight: 600 }}>Error: {seedOutcomes.detail}</span>
-            ) : (
-              <>
-                <RefreshCw className="active-pulse" size={18} /> Loading Seed Collection Outcomes...
-              </>
-            )}
-          
+            <RefreshCw className="active-pulse" size={18} /> Loading Seed Collection Outcomes...
           </div>
         </div>
       );
     }
 
-    const { summary, seedbanks, logs } = seedOutcomes;
+    const { summary, seedbanks = [], logs = [] } = resolved;
 
     const chartDataPhenology = Object.entries(summary.by_phenology || {}).map(([key, val]) => ({
       name: key,
@@ -5975,7 +6174,7 @@ function App() {
             📋 Seed Collection & Phenology Monitoring Logs
           </h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-            {logs.map((log) => (
+            {logs.slice(0, 80).map((log) => (
               <div key={log.id} className="glass-panel" style={{
                 background: 'var(--bg-primary)',
                 padding: '20px',
@@ -6060,24 +6259,18 @@ function App() {
   };
 
   const renderProductionDashboard = () => {
-    if (!productionOutcomes || !productionOutcomes.summary) {
+    const resolved = withProductionOutcomes(productionOutcomes, nurseryMetrics);
+    if (!resolved || !resolved.summary) {
       return (
         <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' }}>
           <div style={{ color: 'var(--text-muted)', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <RefreshCw className="active-pulse" size={18} /> {productionOutcomes && productionOutcomes.detail ? (
-              <span style={{ color: '#ef4444', fontWeight: 600 }}>Error: {productionOutcomes.detail}</span>
-            ) : (
-              <>
-                <RefreshCw className="active-pulse" size={18} /> Loading Nursery Production Outcomes...
-              </>
-            )}
-          
+            <RefreshCw className="active-pulse" size={18} /> Loading Nursery Production Outcomes...
           </div>
         </div>
       );
     }
 
-    const { summary, audits } = productionOutcomes;
+    const { summary, audits = [] } = resolved;
 
     const chartDataHub = Object.entries(summary.by_hub || {}).map(([key, val]) => ({
       name: key,
@@ -6183,7 +6376,7 @@ function App() {
             </div>
             <div>
               <span className="kpi-label">Pockets Filled</span>
-              <h3 style={{ margin: '2px 0 0 0', fontSize: '20px', fontWeight: 800 }}>{summary.total_pocketed.toLocaleString()}</h3>
+              <h3 style={{ margin: '2px 0 0 0', fontSize: '20px', fontWeight: 800 }}>{Number(summary.total_pocketed || 0).toLocaleString()}</h3>
               <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Total pocketed seedling pots</span>
             </div>
           </div>
@@ -6194,8 +6387,8 @@ function App() {
             </div>
             <div>
               <span className="kpi-label">Ready Seedlings</span>
-              <h3 style={{ margin: '2px 0 0 0', fontSize: '20px', fontWeight: 800, color: '#407e52' }}>{summary.total_ready.toLocaleString()}</h3>
-              <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Germination rate: {summary.germination_rate_percent}%</span>
+              <h3 style={{ margin: '2px 0 0 0', fontSize: '20px', fontWeight: 800, color: '#407e52' }}>{Number(summary.total_ready || 0).toLocaleString()}</h3>
+              <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Germination rate: {Number(summary.germination_rate_percent || 0)}%</span>
             </div>
           </div>
 
@@ -6394,24 +6587,18 @@ function App() {
   };
 
   const renderDispatchDashboard = () => {
-    if (!dispatchOutcomes || !dispatchOutcomes.summary) {
+    const resolved = withDispatchOutcomes(dispatchOutcomes, nurseryMetrics);
+    if (!resolved || !resolved.summary) {
       return (
         <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' }}>
           <div style={{ color: 'var(--text-muted)', fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <RefreshCw className="active-pulse" size={18} /> {dispatchOutcomes && dispatchOutcomes.detail ? (
-              <span style={{ color: '#ef4444', fontWeight: 600 }}>Error: {dispatchOutcomes.detail}</span>
-            ) : (
-              <>
-                <RefreshCw className="active-pulse" size={18} /> Loading Seedling Dispatch Outcomes...
-              </>
-            )}
-          
+            <RefreshCw className="active-pulse" size={18} /> Loading Seedling Dispatch Outcomes...
           </div>
         </div>
       );
     }
 
-    const { summary, dispatch } = dispatchOutcomes;
+    const { summary, dispatch = [] } = resolved;
 
     const chartDataNursery = Object.entries(summary.by_nursery || {}).map(([key, val]) => ({
       name: key,
@@ -6514,7 +6701,7 @@ function App() {
             </div>
             <div>
               <span className="kpi-label">Distributed Seedlings</span>
-              <h3 style={{ margin: '2px 0 0 0', fontSize: '20px', fontWeight: 800 }}>{summary.total_distributed.toLocaleString()}</h3>
+              <h3 style={{ margin: '2px 0 0 0', fontSize: '20px', fontWeight: 800 }}>{Number(summary.total_distributed || 0).toLocaleString()}</h3>
               <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Delivered to outplanting locations</span>
             </div>
           </div>
@@ -6525,7 +6712,7 @@ function App() {
             </div>
             <div>
               <span className="kpi-label">Ready Hub Stock</span>
-              <h3 style={{ margin: '2px 0 0 0', fontSize: '20px', fontWeight: 800, color: '#407e52' }}>{summary.total_ready_remaining.toLocaleString()}</h3>
+              <h3 style={{ margin: '2px 0 0 0', fontSize: '20px', fontWeight: 800, color: '#407e52' }}>{Number(summary.total_ready_remaining || 0).toLocaleString()}</h3>
               <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Remaining seedling inventory</span>
             </div>
           </div>

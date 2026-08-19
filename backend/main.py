@@ -715,6 +715,88 @@ def load_layer(layer_name: str, need_geom: bool = False) -> gpd.GeoDataFrame:
     return _layer_cache[cache_key].copy()
 
 
+def safe_load_layer(layer_name: str, need_geom: bool = False) -> gpd.GeoDataFrame:
+    """Load a layer or return an empty GeoDataFrame. Workflow pages must not 500."""
+    try:
+        df = load_layer(layer_name, need_geom=need_geom)
+        if df is None:
+            return gpd.GeoDataFrame()
+        return df
+    except Exception as e:
+        logger.warning(f"[SAFE] layer '{layer_name}' unavailable: {e}")
+        return gpd.GeoDataFrame()
+
+
+def first_matching_col(df, *names):
+    if df is None or df.empty:
+        cols = list(getattr(df, "columns", []))
+    else:
+        cols = list(df.columns)
+    if not cols:
+        return None
+    lower = {str(c).strip().lower(): c for c in cols}
+    for name in names:
+        if name in getattr(df, "columns", []):
+            return name
+        key = str(name).strip().lower()
+        if key in lower:
+            return lower[key]
+    return None
+
+
+def numeric_col(df, *names) -> pd.Series:
+    col = first_matching_col(df, *names)
+    if col is None:
+        return pd.Series(0.0, index=df.index, dtype=float) if df is not None and len(df) else pd.Series(dtype=float)
+    return pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+
+def clean_date_val(val) -> str:
+    if val is None:
+        return ""
+    try:
+        if pd.isna(val):
+            return ""
+    except Exception:
+        pass
+    text = str(val).strip()
+    if text.lower() in ("nat", "nan", "none", "null", "unknown", "unknown date", ""):
+        return ""
+    return text[:10]
+
+
+def map_suitability_score(val) -> float:
+    val_str = str(val or "").lower().strip()
+    if not val_str or val_str in ("nan", "none", "null"):
+        return 3.0
+    if "excellent" in val_str or "high" in val_str or val_str in ("4", "4.0", "yes"):
+        return 4.0
+    if "good" in val_str or "medium" in val_str or val_str in ("3", "3.0"):
+        return 3.0
+    if "fair" in val_str or "low" in val_str or val_str in ("2", "2.0"):
+        return 2.0
+    if "poor" in val_str or val_str in ("1", "1.0", "no"):
+        return 1.0
+    num = pd.to_numeric(val, errors="coerce")
+    return float(num) if pd.notna(num) else 3.0
+
+
+def audit_record_useful(item) -> bool:
+    grower = str(item.get("grower") or "").strip().lower()
+    obs = str(item.get("observations") or "").strip()
+    rec = str(item.get("recommendations") or "").strip().lower()
+    date = str(item.get("date") or "").strip().lower()
+    if obs:
+        return True
+    if grower and grower not in ("unknown", "unknown grower", "none", "nan"):
+        return True
+    if date and date not in ("nat", "nan", "unknown", "unknown date", ""):
+        return True
+    if rec and rec not in ("none", "unknown", "stage: unknown"):
+        return True
+    return False
+
+
 def _json_cache_bytes(payload) -> bytes:
     def _default(value):
         if hasattr(value, "item"):
@@ -1746,11 +1828,37 @@ def get_landprep_outcomes():
 def get_seed_outcomes():
     """Retrieve seed collection, seedbank inventory, quality and method stats, and trip logs."""
     try:
-        df = load_layer("seed_collection")
+        df = safe_load_layer("seed_collection")
+        if df.empty:
+            return {
+                "summary": {
+                    "total_monitored_trees": 0,
+                    "valid_records": 0,
+                    "total_collected_kg": 0.0,
+                    "unique_collectors": 0,
+                    "by_species": {},
+                    "by_region": {},
+                    "by_phenology": {},
+                    "by_method": {},
+                    "by_quality": {},
+                    "by_soil": {},
+                    "by_landuse": {},
+                },
+                "seedbanks": [],
+                "logs": [],
+            }
 
-        
-        # Filter valid rows: where Species 1 is not null or Collector is not null
-        df_valid = df[df["Species 1"].notna() | df["Collector"].notna()]
+        sp1_col = first_matching_col(df, "Species 1", "Species", "species")
+        collector_col = first_matching_col(df, "Collector", "Name", "Monitor")
+        qty_col = first_matching_col(df, "Quantity C", "Quantity", "Qty", "quantity")
+        mask = pd.Series(True, index=df.index)
+        if sp1_col or collector_col:
+            mask = pd.Series(False, index=df.index)
+            if sp1_col:
+                mask = mask | df[sp1_col].notna()
+            if collector_col:
+                mask = mask | df[collector_col].notna()
+        df_valid = df[mask]
         
         total_qty = 0.0
         by_species = {}
@@ -1763,7 +1871,11 @@ def get_seed_outcomes():
         collectors = set()
         
         # Mappings
-        phenology_mapping = {"Budburst": "Budburst", "Dormancy": "Dormancy", "Flowering": "Flowering", "Fruiting": "Fruiting", "Leafing": "Leafing", "Senescence": "Senescence"}
+        phenology_mapping = {
+            "1": "Budburst", "2": "Dormancy", "3": "Flowering", "4": "Fruiting", "5": "Leafing", "6": "Senescence",
+            "Budburst": "Budburst", "Dormancy": "Dormancy", "Flowering": "Flowering",
+            "Fruiting": "Fruiting", "Leafing": "Leafing", "Senescence": "Senescence",
+        }
         quality_mapping = {"1": "Very good", "2": "Good", "3": "Moderate", "4": "Low", "5": "Poor"}
         method_mapping = {"1": "Hand Picking", "2": "Using Hookes/Ladder", "3": "Trees Shaking", "4": "Tree Climbing"}
         soil_mapping = {"1": "Red Clay", "2": "Black Clay", "3": "Sandy", "4": "Loamy", "5": "Laterite"}
@@ -1775,11 +1887,11 @@ def get_seed_outcomes():
             return clean_img_global(img)
             
         for idx, row in df_valid.iterrows():
-            qty = parse_quantity_kg(row.get("Quantity C"))
+            qty = parse_quantity_kg(row.get(qty_col) if qty_col else row.get("Quantity C"))
             total_qty += qty
             
             # Species (Species 1 is main, fallback to Species 2, Species 3)
-            sp1 = str(row.get("Species 1", "")).strip()
+            sp1 = str(row.get(sp1_col) if sp1_col else row.get("Species 1", "")).strip()
             if sp1 and sp1 != "nan" and sp1 != "None":
                 by_species[sp1] = by_species.get(sp1, 0.0) + qty
             else:
@@ -1796,8 +1908,9 @@ def get_seed_outcomes():
                 region = region_raw
             by_region[region] = by_region.get(region, 0.0) + qty
             
-            phenology = str(row.get("Phenology", "Unknown")).strip()
-            if phenology and phenology != "nan" and phenology != "None":
+            phenology_raw = str(row.get("Phenology", "Unknown")).strip()
+            phenology = phenology_mapping.get(phenology_raw, phenology_raw)
+            if phenology and phenology not in ("nan", "None", "Unknown", ""):
                 by_phenology[phenology] = by_phenology.get(phenology, 0) + 1
                 
             method_val = str(row.get("Method", "")).strip()
@@ -1820,7 +1933,7 @@ def get_seed_outcomes():
             if landuse != "Unknown":
                 by_landuse[landuse] = by_landuse.get(landuse, 0) + 1
                 
-            collector = str(row.get("Collector", "Unknown")).strip()
+            collector = str(row.get(collector_col) if collector_col else row.get("Collector", "Unknown")).strip()
             if collector and collector != "nan" and collector != "None":
                 collectors.add(collector)
             else:
@@ -1848,7 +1961,7 @@ def get_seed_outcomes():
                 "collector": collector,
                 "species": species_list,
                 "primary_species": sp1,
-                "quantity_raw": clean_field(row.get("Quantity C"), "0 kg"),
+                "quantity_raw": clean_field(row.get(qty_col) if qty_col else row.get("Quantity C"), "0 kg"),
                 "quantity_kg": qty,
                 "region": region,
                 "cluster": clean_field(row.get("Cluster"), "Unknown"),
@@ -1869,7 +1982,7 @@ def get_seed_outcomes():
         # Parse SeedBank.gpkg
         seedbanks = []
         try:
-            sb_df = load_layer("seed_bank")
+            sb_df = safe_load_layer("seed_bank")
 
             for s_idx, s_row in sb_df.iterrows():
                 name = str(s_row.get("Bank Name", "")).strip() or str(s_row.get("Name", "")).strip() or "Unknown Bank"
@@ -1912,122 +2025,171 @@ def get_seed_outcomes():
                 "by_landuse": by_landuse
             },
             "seedbanks": seedbanks,
-            "logs": logs
+            "logs": logs[:200]
         }
     except Exception as e:
         logger.error(f"Error fetching seed outcomes: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        return {
+            "summary": {
+                "total_monitored_trees": 0,
+                "valid_records": 0,
+                "total_collected_kg": 0.0,
+                "unique_collectors": 0,
+                "by_species": {},
+                "by_region": {},
+                "by_phenology": {},
+                "by_method": {},
+                "by_quality": {},
+                "by_soil": {},
+                "by_landuse": {},
+            },
+            "seedbanks": [],
+            "logs": [],
+            "detail": str(e),
+        }
 
 @app.get("/api/workflow/nursery-production/outcomes")
 def get_nursery_production_outcomes():
     """Retrieve nursery operations, inventories, supervisor verification audits, and work rates."""
+    total_pocketed = 0
+    total_germinated = 0
+    total_ready = 0
+    germination_rate = 0.0
+    by_hub = {}
+    by_gender = {}
+    total_audits = 0
+    by_work_rate = {}
+    by_completion = {}
+    audits = []
+
     try:
-        # 1. Nursery inventories
-        n_df = load_layer("nurseries")
+        n_df = safe_load_layer("nurseries")
+        if not n_df.empty:
+            pocketed = numeric_col(n_df, "Pocketed", "pocketed", "Total Pocketed")
+            germinated = numeric_col(n_df, "Seeds Germinated", "Germinated", "germinated")
+            ready = numeric_col(n_df, "Ready to Plant", "Ready", "ReadyToPlant")
+            total_pocketed = int(pocketed.sum())
+            total_germinated = int(germinated.sum())
+            total_ready = int(ready.sum())
+            if total_pocketed > 0:
+                germination_rate = round(float((total_germinated / total_pocketed) * 100), 1)
 
-        
-        n_df["Pocketed"] = pd.to_numeric(n_df["Pocketed"], errors="coerce").fillna(0)
-        n_df["Seeds Germinated"] = pd.to_numeric(n_df["Seeds Germinated"], errors="coerce").fillna(0)
-        n_df["Ready to Plant"] = pd.to_numeric(n_df["Ready to Plant"], errors="coerce").fillna(0)
-        
-        total_pocketed = int(n_df["Pocketed"].sum())
-        total_germinated = int(n_df["Seeds Germinated"].sum())
-        total_ready = int(n_df["Ready to Plant"].sum())
-        
-        germination_rate = 0.0
-        if total_pocketed > 0:
-            germination_rate = round(float((total_ready / total_pocketed) * 100), 1)
-            
-        # Group by nursery hub
-        by_hub = {}
-        for idx, row in n_df.iterrows():
-            hub = str(row.get("Nursery", "Unknown")).strip()
-            if not hub or hub == "nan" or hub == "None":
-                hub = "Independent Growers"
-            pock = int(pd.to_numeric(row.get("Pocketed"), errors="coerce") or 0)
-            ready = int(pd.to_numeric(row.get("Ready to Plant"), errors="coerce") or 0)
-            germ = int(pd.to_numeric(row.get("Seeds Germinated"), errors="coerce") or 0)
-            
-            if hub not in by_hub:
-                by_hub[hub] = {"pocketed": 0, "ready": 0, "germinated": 0}
-            by_hub[hub]["pocketed"] += pock
-            by_hub[hub]["ready"] += ready
-            by_hub[hub]["germinated"] += germ
-            
-        by_gender = {}
-        if "Gender" in n_df.columns:
-            gender_counts = n_df["Gender"].astype(str).value_counts().to_dict()
-            for k, v in gender_counts.items():
-                if k in ("1", "1.0", "m", "male"):
-                    by_gender["Male"] = by_gender.get("Male", 0) + v
-                elif k in ("2", "2.0", "f", "female"):
-                    by_gender["Female"] = by_gender.get("Female", 0) + v
-                else:
-                    by_gender["Unknown"] = by_gender.get("Unknown", 0) + v
-                    
-        # 2. Supervisor Verifications Audits
-        v_df = load_layer("nurseries_verification")
+            hub_col = first_matching_col(n_df, "Nursery", "Nursery Name", "Name")
+            pock_col = first_matching_col(n_df, "Pocketed", "pocketed")
+            ready_col = first_matching_col(n_df, "Ready to Plant", "Ready")
+            germ_col = first_matching_col(n_df, "Seeds Germinated", "Germinated")
+            for _, row in n_df.iterrows():
+                hub = str(row.get(hub_col) if hub_col else "Independent Growers").strip()
+                if not hub or hub in ("nan", "None"):
+                    hub = "Independent Growers"
+                pock = int(pd.to_numeric(row.get(pock_col), errors="coerce") or 0) if pock_col else 0
+                ready_n = int(pd.to_numeric(row.get(ready_col), errors="coerce") or 0) if ready_col else 0
+                germ = int(pd.to_numeric(row.get(germ_col), errors="coerce") or 0) if germ_col else 0
+                if hub not in by_hub:
+                    by_hub[hub] = {"pocketed": 0, "ready": 0, "germinated": 0}
+                by_hub[hub]["pocketed"] += pock
+                by_hub[hub]["ready"] += ready_n
+                by_hub[hub]["germinated"] += germ
 
-        
-        total_audits = len(v_df)
-        work_rate_counts = v_df["Work Rate"].astype(str).value_counts().to_dict()
-        by_work_rate = {k: int(v) for k, v in work_rate_counts.items() if k and k != "nan" and k != "None"}
-        
-        completion_counts = v_df["Completion Level"].astype(str).value_counts().to_dict()
-        by_completion = {k: int(v) for k, v in completion_counts.items() if k and k != "nan" and k != "None"}
-        
-        audits = []
-        def clean_img(img):
-            return clean_img_global(img)
-            
-        v_df_sorted = v_df.copy()
-        if "Date" in v_df_sorted.columns:
-            v_df_sorted["ParsedDate"] = pd.to_datetime(v_df_sorted["Date"], errors="coerce")
-            v_df_sorted = v_df_sorted.sort_values(by="ParsedDate", ascending=False)
-            
-        for idx, row in v_df_sorted.head(100).iterrows(): # Return top 100 audits for feed performance
-            date_str = str(row.get("Date"))[:10] if row.get("Date") else "Unknown"
-            audits.append({
-                "id": f"audit-{idx}",
-                "officer": clean_field(row.get("Name"), "Unknown Officer"),
-                "nursery_name": clean_field(row.get("Nursery Name"), "Unknown Nursery"),
-                "date": date_str,
-                "work_rate": clean_field(row.get("Work Rate"), "Good, maintain good work"),
-                "stage": clean_field(row.get("Stage"), ""),
-                "completion_level": clean_field(row.get("Completion Level"), "Unknown"),
-                "observations": clean_field(row.get("Observations"), ""),
-                "recommendations": clean_field(row.get("Recommendations"), ""),
-                "photo": clean_img(row.get("Photo")),
-                "audio": clean_img(row.get("Audio"))
-            })
-            
-        return {
-            "summary": {
-                "total_pocketed": total_pocketed,
-                "total_germinated": total_germinated,
-                "total_ready": total_ready,
-                "germination_rate_percent": germination_rate or 92.4,
-                "by_hub": by_hub,
-                "by_gender": by_gender,
-                "total_audits": total_audits,
-                "by_work_rate": by_work_rate,
-                "by_completion": by_completion
-            },
-            "audits": audits
-        }
+            gender_col = first_matching_col(n_df, "Gender", "Sex")
+            if gender_col:
+                gender_counts = n_df[gender_col].astype(str).str.lower().value_counts().to_dict()
+                for k, v in gender_counts.items():
+                    if k in ("1", "1.0", "m", "male"):
+                        by_gender["Male"] = by_gender.get("Male", 0) + int(v)
+                    elif k in ("2", "2.0", "f", "female"):
+                        by_gender["Female"] = by_gender.get("Female", 0) + int(v)
+                    elif k not in ("nan", "none", ""):
+                        by_gender["Unknown"] = by_gender.get("Unknown", 0) + int(v)
     except Exception as e:
-        logger.error(f"Error fetching nursery production outcomes: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.warning(f"Error reading nursery inventories: {e}")
+
+    try:
+        v_df = safe_load_layer("nurseries_verification")
+        if not v_df.empty:
+            total_audits = int(len(v_df))
+            wr_col = first_matching_col(v_df, "Work Rate", "WorkRate")
+            if wr_col:
+                work_rate_counts = v_df[wr_col].astype(str).value_counts().to_dict()
+                by_work_rate = {k: int(v) for k, v in work_rate_counts.items() if k and k not in ("nan", "None")}
+            cl_col = first_matching_col(v_df, "Completion Level", "Completion")
+            if cl_col:
+                completion_counts = v_df[cl_col].astype(str).value_counts().to_dict()
+                by_completion = {k: int(v) for k, v in completion_counts.items() if k and k not in ("nan", "None")}
+
+            v_df_sorted = v_df.copy()
+            date_col = first_matching_col(v_df_sorted, "Date")
+            if date_col:
+                v_df_sorted["ParsedDate"] = pd.to_datetime(v_df_sorted[date_col], errors="coerce")
+                v_df_sorted = v_df_sorted.sort_values(by="ParsedDate", ascending=False)
+
+            for idx, row in v_df_sorted.head(80).iterrows():
+                obs = clean_field(row.get("Observations"), "")
+                nursery_name = clean_field(row.get("Nursery Name") or row.get("Nursery"), "")
+                date_str = clean_date_val(row.get(date_col) if date_col else row.get("Date"))
+                if not obs and (not nursery_name or nursery_name.lower() in ("unknown", "unknown nursery")) and not date_str:
+                    continue
+                audits.append({
+                    "id": f"audit-{idx}",
+                    "officer": clean_field(row.get("Name"), "Unknown Officer"),
+                    "nursery_name": nursery_name or "Unknown Nursery",
+                    "date": date_str or "Unknown",
+                    "work_rate": clean_field(row.get("Work Rate"), ""),
+                    "stage": clean_field(row.get("Stage"), ""),
+                    "completion_level": clean_field(row.get("Completion Level"), "Unknown"),
+                    "observations": obs,
+                    "recommendations": clean_field(row.get("Recommendations"), ""),
+                    "photo": clean_img_global(row.get("Photo")),
+                    "audio": clean_img_global(row.get("Audio")),
+                })
+    except Exception as e:
+        logger.warning(f"Error reading nursery verification audits: {e}")
+
+    return {
+        "summary": {
+            "total_pocketed": total_pocketed,
+            "total_germinated": total_germinated,
+            "total_ready": total_ready,
+            "germination_rate_percent": germination_rate,
+            "by_hub": by_hub,
+            "by_gender": by_gender,
+            "total_audits": total_audits,
+            "by_work_rate": by_work_rate,
+            "by_completion": by_completion,
+        },
+        "audits": audits[:80],
+    }
 
 @app.get("/api/workflow/dispatch/outcomes")
 def get_seedling_dispatch_outcomes():
     """Retrieve seedling distribution, top supplying nurseries, and recipient grower logs."""
     try:
-        p_df = load_layer("planting")
+        p_df = safe_load_layer("planting")
+        if p_df.empty:
+            return {
+                "summary": {
+                    "total_distributed": 0,
+                    "total_ready_remaining": 0,
+                    "active_recipients": 0,
+                    "by_nursery": {},
+                    "by_ward": {},
+                    "by_program": {},
+                    "timeline": [],
+                },
+                "dispatch": [],
+            }
 
-        
-        # Filter valid records
-        df_valid = p_df[p_df["Grower Name"].notna() | p_df["Planted"].notna()]
+        grower_col = first_matching_col(p_df, "Grower Name", "Grower", "Name")
+        planted_col = first_matching_col(p_df, "Planted", "Trees Planted", "Quantity")
+        if grower_col or planted_col:
+            mask = pd.Series(False, index=p_df.index)
+            if grower_col:
+                mask = mask | p_df[grower_col].notna()
+            if planted_col:
+                mask = mask | p_df[planted_col].notna()
+            df_valid = p_df[mask]
+        else:
+            df_valid = p_df
         
         total_distributed = 0
         by_nursery = {}
@@ -2037,8 +2199,9 @@ def get_seedling_dispatch_outcomes():
         recipients = set()
         by_month = {}
         
+        ward_col = first_matching_col(p_df, "Ward ", "Ward", "ward")
         for idx, row in df_valid.iterrows():
-            planted = pd.to_numeric(row.get("Planted"), errors="coerce")
+            planted = pd.to_numeric(row.get(planted_col) if planted_col else row.get("Planted"), errors="coerce")
             if pd.isna(planted) or planted is None or planted < 0:
                 planted = 0.0
             planted_int = int(planted)
@@ -2049,7 +2212,7 @@ def get_seedling_dispatch_outcomes():
                 nursery = "Independent Supply"
             by_nursery[nursery] = by_nursery.get(nursery, 0) + planted_int
             
-            ward = str(row.get("Ward ", "Unknown")).strip()
+            ward = str(row.get(ward_col) if ward_col else row.get("Ward ", "Unknown")).strip()
             if ward.lower().startswith("ward "):
                 ward = ward[5:].strip()
             elif ward.lower().startswith("ward"):
@@ -2063,7 +2226,7 @@ def get_seedling_dispatch_outcomes():
             if prog and prog != "nan" and prog != "None":
                 by_program[prog] = by_program.get(prog, 0) + planted_int
                 
-            g_name = row.get("Grower Name")
+            g_name = row.get(grower_col) if grower_col else row.get("Grower Name")
             g_surname = row.get("Grower Surname")
             name_parts = []
             if pd.notna(g_name) and str(g_name).strip() != 'nan':
@@ -2098,9 +2261,9 @@ def get_seedling_dispatch_outcomes():
             
         total_ready = 0
         try:
-            n_df = load_layer("nurseries")
+            n_df = safe_load_layer("nurseries")
 
-            n_df["Ready to Plant"] = pd.to_numeric(n_df["Ready to Plant"], errors="coerce").fillna(0)
+            n_df["Ready to Plant"] = numeric_col(n_df, "Ready to Plant", "Ready")
             total_ready = int(n_df["Ready to Plant"].sum())
         except Exception as n_err:
             logger.warning(f"Error reading nurseries ready seedlings: {n_err}")
@@ -2122,7 +2285,19 @@ def get_seedling_dispatch_outcomes():
         }
     except Exception as e:
         logger.error(f"Error fetching dispatch outcomes: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        return {
+            "summary": {
+                "total_distributed": 0,
+                "total_ready_remaining": 0,
+                "active_recipients": 0,
+                "by_nursery": {},
+                "by_ward": {},
+                "by_program": {},
+                "timeline": [],
+            },
+            "dispatch": [],
+            "detail": str(e),
+        }
 
 @app.get("/api/workflow/survival/outcomes")
 def get_survival_outcomes():
@@ -2731,14 +2906,20 @@ def get_nursery_workflow():
     
     # 1. Seed Collection
     try:
-        df = load_layer("seed_collection")
+        df = safe_load_layer("seed_collection")
 
-        df["Quantity_Parsed"] = df["Quantity C"].apply(parse_quantity_kg)
+        qty_col = first_matching_col(df, "Quantity C", "Quantity", "Qty")
+        if qty_col:
+            df["Quantity_Parsed"] = df[qty_col].apply(parse_quantity_kg)
+        else:
+            df["Quantity_Parsed"] = 0.0
         result["seed_collection"]["total_collected_kg"] = round(float(df["Quantity_Parsed"].sum()), 2)
         
-        grouped_species = df.groupby("Species")["Quantity_Parsed"].sum().reset_index()
-        grouped_species = grouped_species[grouped_species["Species"].str.strip() != ""]
-        result["seed_collection"]["by_species"] = [{"species": r["Species"], "quantity_kg": round(float(r["Quantity_Parsed"]), 2)} for _, r in grouped_species.iterrows()]
+        sp_col = first_matching_col(df, "Species", "Species 1", "species")
+        if sp_col:
+            grouped_species = df.groupby(sp_col)["Quantity_Parsed"].sum().reset_index()
+            grouped_species = grouped_species[grouped_species[sp_col].astype(str).str.strip() != ""]
+            result["seed_collection"]["by_species"] = [{"species": r[sp_col], "quantity_kg": round(float(r["Quantity_Parsed"]), 2)} for _, r in grouped_species.iterrows()]
         
         df["Region_Mapped"] = df["Region"].astype(str).map({"1": "Northern", "2": "Southern"}).fillna(df["Region"].astype(str))
         grouped_region = df.groupby("Region_Mapped")["Quantity_Parsed"].sum().reset_index()
@@ -2748,13 +2929,13 @@ def get_nursery_workflow():
 
     # 2. Nursery Production
     try:
-        df = load_layer("nurseries")
+        df = safe_load_layer("nurseries")
 
-        df["Pocketed"] = pd.to_numeric(df["Pocketed"], errors="coerce").fillna(0)
-        df["Germinated"] = pd.to_numeric(df["Germinated"], errors="coerce").fillna(0)
-        df["Ready to Plant"] = pd.to_numeric(df["Ready to Plant"], errors="coerce").fillna(0)
-        df["Total Germination Target"] = pd.to_numeric(df["Total Germination Target"], errors="coerce").fillna(0)
-        df["Seeds Germinated"] = pd.to_numeric(df["Seeds Germinated"], errors="coerce").fillna(0)
+        df["Pocketed"] = numeric_col(df, "Pocketed", "pocketed")
+        df["Germinated"] = numeric_col(df, "Germinated", "Seeds Germinated")
+        df["Ready to Plant"] = numeric_col(df, "Ready to Plant", "Ready")
+        df["Total Germination Target"] = numeric_col(df, "Total Germination Target")
+        df["Seeds Germinated"] = numeric_col(df, "Seeds Germinated", "Germinated")
         
         result["nursery_production"]["pocketed"] = int(df["Pocketed"].sum())
         germinated_sum = df["Seeds Germinated"].sum() or df["Germinated"].sum()
@@ -2786,9 +2967,9 @@ def get_nursery_workflow():
 
     # 3. Seedling Dispatch
     try:
-        df_plant = load_layer("planting")
+        df_plant = safe_load_layer("planting")
 
-        df_plant["Planted"] = pd.to_numeric(df_plant["Planted"], errors="coerce").fillna(0)
+        df_plant["Planted"] = numeric_col(df_plant, "Planted", "Trees Planted")
         
         distributed = int(df_plant["Planted"].sum())
         remaining = max(0, result["nursery_production"]["ready"] - distributed)
@@ -2803,94 +2984,111 @@ def get_nursery_workflow():
 @app.get("/api/workflow/beekeeping/sites/outcomes")
 def get_beekeeping_sites_outcomes():
     """Retrieve apiary site assessments, suitabilities, standard installations, and evaluation logs."""
+    empty = {
+        "summary": {
+            "total_evaluated_sites": 0,
+            "suitable_sites": 0,
+            "needs_improvement": 0,
+            "total_waxed": 0,
+            "avg_suitability_score": 0.0,
+            "average_scores": {"flowers": 0.0, "water": 0.0, "sunlight": 0.0, "security": 0.0},
+            "by_accessibility": {"Easy": 0, "Moderate": 0, "Difficult": 0},
+            "by_condition": {"Good Condition": 0, "Needs Clearing": 0, "Pests Detected": 0},
+            "by_ward": {},
+        },
+        "logs": [],
+    }
     try:
-        df = load_layer("beekeeping")
+        df = safe_load_layer("apiary_assessment")
+        if df.empty:
+            df = safe_load_layer("beekeeping")
+        if df.empty:
+            return empty
 
-        
-        # Valid records where Beekeeper is present or mounted is present
-        df_valid = df[df["Beekeepr"].notna() | df["Mounted"].notna() | df["Comments"].notna()]
-        
-        total_evaluations = len(df_valid)
+        beekeeper_col = first_matching_col(df, "Beekeepr", "Beekeeper", "Name", "Grower")
+        mounted_col = first_matching_col(df, "Mounted", "Standard Mounted")
+        comments_col = first_matching_col(df, "Comments", "Comment", "Observations")
+        flowers_col = first_matching_col(df, "Flowers", "Flora", "Vegetation")
+        water_col = first_matching_col(df, "Water", "Water Source")
+        sun_col = first_matching_col(df, "Sunlight", "Shade", "Sun")
+        sec_col = first_matching_col(df, "Security", "Access")
+        access_col = first_matching_col(df, "Accessibility", "Access")
+        waxed_col = first_matching_col(df, "Waxed")
+
+        mask = pd.Series(True, index=df.index)
+        if beekeeper_col or mounted_col or comments_col:
+            mask = pd.Series(False, index=df.index)
+            if beekeeper_col:
+                mask = mask | df[beekeeper_col].notna()
+            if mounted_col:
+                mask = mask | df[mounted_col].notna()
+            if comments_col:
+                mask = mask | df[comments_col].notna()
+        df_valid = df[mask]
+
+        total_evaluations = int(len(df_valid))
         total_mounted_standard = 0
         total_waxed = 0
-        
-        # Suitability averages (simulated/computed based on Comments and parameters)
         flowers_scores = []
         water_scores = []
         sunlight_scores = []
         security_scores = []
-        
         by_accessibility = {"Easy": 0, "Moderate": 0, "Difficult": 0}
         by_condition = {"Good Condition": 0, "Needs Clearing": 0, "Pests Detected": 0}
         by_ward = {}
-        
         logs = []
-        
-        def clean_img(img):
-            return clean_img_global(img)
-            
+
         for idx, row in df_valid.iterrows():
-            mounted = str(row.get("Mounted", "")).strip().lower()
-            if mounted == "yes":
+            mounted = str(row.get(mounted_col) if mounted_col else row.get("Mounted", "")).strip().lower()
+            if mounted in ("yes", "1", "true", "mounted"):
                 total_mounted_standard += 1
-                
-            waxed = str(row.get("Waxed", "")).strip().lower()
-            if waxed == "yes":
+            waxed = str(row.get(waxed_col) if waxed_col else row.get("Waxed", "")).strip().lower()
+            if waxed in ("yes", "1", "true"):
                 total_waxed += 1
-                
-            comments = str(row.get("Comments", "")).strip().lower()
-            
-            # Suitability logic
-            flowers = 3.0
-            water = 3.0
-            sunlight = 3.0
-            security = 3.0
-            
-            if "good" in comments or "standard" in comments:
-                flowers = 4.0
-                water = 3.0
-                sunlight = 4.0
-                security = 4.0
-            elif "shade" in comments:
-                sunlight = 4.0
-                flowers = 3.0
-                water = 3.0
-                security = 3.0
-            elif "not mounted" in comments or "re-mount" in comments:
-                security = 1.0
-                sunlight = 2.0
-                flowers = 2.0
-                water = 2.0
-            elif "rewax" in comments or "wax" in comments:
-                flowers = 3.0
-                water = 2.0
-                sunlight = 3.0
-                security = 3.0
-            elif "ants" in comments or "termite" in comments:
-                security = 1.0
-                water = 3.0
-                flowers = 3.0
-                
+
+            comments = str(row.get(comments_col) if comments_col else row.get("Comments", "")).strip().lower()
+            if flowers_col:
+                flowers = map_suitability_score(row.get(flowers_col))
+                water = map_suitability_score(row.get(water_col) if water_col else 3)
+                sunlight = map_suitability_score(row.get(sun_col) if sun_col else 3)
+                security = map_suitability_score(row.get(sec_col) if sec_col else 3)
+            else:
+                flowers = water = sunlight = security = 3.0
+                if "good" in comments or "standard" in comments:
+                    flowers, sunlight, security = 4.0, 4.0, 4.0
+                elif "shade" in comments:
+                    sunlight = 4.0
+                elif "not mounted" in comments or "re-mount" in comments:
+                    flowers = water = sunlight = 2.0
+                    security = 1.0
+                elif "rewax" in comments or "wax" in comments:
+                    water = 2.0
+                elif "ants" in comments or "termite" in comments:
+                    security = 1.0
+
             flowers_scores.append(flowers)
             water_scores.append(water)
             sunlight_scores.append(sunlight)
             security_scores.append(security)
-            
-            # Accessibility & Condition mapping
-            accessibility = "Easy"
-            if idx % 5 == 0:
-                accessibility = "Difficult"
-            elif idx % 3 == 0:
+
+            accessibility = str(row.get(access_col) if access_col else "").strip() or "Easy"
+            if accessibility.lower() in ("1", "easy"):
+                accessibility = "Easy"
+            elif accessibility.lower() in ("2", "moderate"):
                 accessibility = "Moderate"
+            elif accessibility.lower() in ("3", "difficult"):
+                accessibility = "Difficult"
+            if accessibility not in by_accessibility:
+                by_accessibility[accessibility] = 0
             by_accessibility[accessibility] += 1
-            
+
             condition = "Good Condition"
             if "ants" in comments or "termite" in comments or "pests" in comments:
                 condition = "Pests Detected"
             elif "clearing" in comments or "brush" in comments or "weeds" in comments:
                 condition = "Needs Clearing"
-            by_condition[condition] += 1
-            
+            by_condition[condition] = by_condition.get(condition, 0) + 1
+
             ward = str(row.get("Ward", "Unknown")).strip()
             if ward.lower().startswith("ward "):
                 ward = ward[5:].strip()
@@ -2898,164 +3096,166 @@ def get_beekeeping_sites_outcomes():
                 ward = ward[4:].strip()
             if ward.endswith("."):
                 ward = ward[:-1].strip()
-            if ward and ward != "nan" and ward != "Unknown" and ward != "None":
+            if ward and ward not in ("nan", "Unknown", "None"):
                 by_ward[ward] = by_ward.get(ward, 0) + 1
-                
-            photo_1 = clean_img(row.get("Photos 1"))
-            photo_2 = clean_img(row.get("Photos 2"))
-            
+
             logs.append({
                 "id": f"site-{idx}",
-                "beekeeper": clean_field(row.get("Beekeepr"), "Unknown Beekeeper"),
+                "beekeeper": clean_field(row.get(beekeeper_col) if beekeeper_col else row.get("Beekeepr"), "Unknown Beekeeper"),
                 "ward": clean_field(ward, "Unknown"),
                 "village": clean_field(row.get("Village"), "Unknown"),
                 "cluster": clean_field(row.get("Cluster"), "Unknown"),
                 "region": clean_field(row.get("Region"), "Unknown"),
-                "mounted": clean_field(row.get("Mounted"), "No"),
-                "waxed": clean_field(row.get("Waxed"), "No"),
+                "mounted": clean_field(row.get(mounted_col) if mounted_col else row.get("Mounted"), "No"),
+                "waxed": clean_field(row.get(waxed_col) if waxed_col else row.get("Waxed"), "No"),
                 "flowers_score": flowers,
                 "water_score": water,
                 "sunlight_score": sunlight,
                 "security_score": security,
                 "accessibility": accessibility,
                 "condition": condition,
-                "comments": clean_field(row.get("Comments"), ""),
+                "comments": clean_field(row.get(comments_col) if comments_col else row.get("Comments"), ""),
                 "monitor": clean_field(row.get("Monitor"), "Unknown"),
-                "date": str(row.get("Date"))[:10] if row.get("Date") else "Unknown",
-                "photo_1": photo_1,
-                "photo_2": photo_2
+                "date": clean_date_val(row.get("Date")) or "Unknown",
+                "photo_1": clean_img_global(row.get("Photos 1") or row.get("Photos") or row.get("Photo")),
+                "photo_2": clean_img_global(row.get("Photos 2") or row.get("Photo 2")),
             })
-            
-        avg_flowers = round(sum(flowers_scores) / len(flowers_scores), 1) if flowers_scores else 3.4
-        avg_water = round(sum(water_scores) / len(water_scores), 1) if water_scores else 3.2
-        avg_sunlight = round(sum(sunlight_scores) / len(sunlight_scores), 1) if sunlight_scores else 3.3
-        avg_security = round(sum(security_scores) / len(security_scores), 1) if security_scores else 3.1
-        
-        overall_avg = round((avg_flowers + avg_water + avg_sunlight + avg_security) / 4.0, 1)
-        
+
+        avg_flowers = round(sum(flowers_scores) / len(flowers_scores), 1) if flowers_scores else 0.0
+        avg_water = round(sum(water_scores) / len(water_scores), 1) if water_scores else 0.0
+        avg_sunlight = round(sum(sunlight_scores) / len(sunlight_scores), 1) if sunlight_scores else 0.0
+        avg_security = round(sum(security_scores) / len(security_scores), 1) if security_scores else 0.0
+        overall_avg = round((avg_flowers + avg_water + avg_sunlight + avg_security) / 4.0, 1) if flowers_scores else 0.0
+
         return {
             "summary": {
                 "total_evaluated_sites": total_evaluations,
-                "suitable_sites": total_evaluations - by_condition.get("Pests Detected", 0),
+                "suitable_sites": total_mounted_standard or (total_evaluations - by_condition.get("Pests Detected", 0)),
                 "needs_improvement": by_condition.get("Pests Detected", 0) + by_condition.get("Needs Clearing", 0),
+                "total_waxed": total_waxed,
                 "avg_suitability_score": overall_avg,
                 "average_scores": {
                     "flowers": avg_flowers,
                     "water": avg_water,
                     "sunlight": avg_sunlight,
-                    "security": avg_security
+                    "security": avg_security,
                 },
                 "by_accessibility": by_accessibility,
                 "by_condition": by_condition,
-                "by_ward": by_ward
+                "by_ward": by_ward,
             },
-            "logs": logs[:100]
+            "logs": logs[:100],
         }
     except Exception as e:
         logger.error(f"Error fetching beekeeping sites outcomes: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        empty["detail"] = str(e)
+        return empty
+
 
 @app.get("/api/workflow/beekeeping/trainings/outcomes")
 def get_beekeeping_trainings_outcomes():
     """Retrieve beekeeping trainings, participants de-duplicated lists, and session summaries."""
     try:
-        df = load_layer("meetings")
-
-        
-        # Filter beekeeping trainings
-        beekeeping_trainings = df[
-            (df["MeetingTyp"].astype(str) == "2") & 
-            (df["Title"].astype(str).str.lower().str.contains(r"\bbee\b|\bbees\b|apiary|honey|beekeeping|apiculture", regex=True, na=False))
-        ]
-        
+        df = safe_load_layer("meetings")
         trainings = []
         total_attendants = 0
         total_male = 0
         total_female = 0
-        
-        def clean_img(img):
-            return clean_img_global(img)
-            
+        if df.empty:
+            return {
+                "summary": {
+                    "trainings_conducted": 0,
+                    "attendants_total": 0,
+                    "attendants_male": 0,
+                    "attendants_female": 0,
+                },
+                "trainings": [],
+            }
+
+        title_col = first_matching_col(df, "Title", "Meeting Title", "Subject")
+        type_col = first_matching_col(df, "MeetingTyp", "Meeting Type", "Type")
+        title_series = df[title_col].astype(str).str.lower() if title_col else pd.Series("", index=df.index)
+        is_bee = title_series.str.contains(r"bee|apiary|honey|apiculture", na=False)
+        beekeeping_trainings = df[is_bee]
+        if beekeeping_trainings.empty and type_col:
+            type_series = df[type_col].astype(str)
+            beekeeping_trainings = df[type_series.isin(["2", "Training"]) & is_bee]
+
         for idx, row in beekeeping_trainings.iterrows():
             tot, m, f = parse_attendants_count(row.get("Attendants"))
             total_attendants += tot
             total_male += m
             total_female += f
-            
             trainings.append({
                 "id": f"training-{idx}",
-                "title": clean_field(row.get("Title"), "Beekeeping & Hive Management Training"),
-                "date": str(row.get("Date"))[:10] if row.get("Date") else "Unknown",
+                "title": clean_field(row.get(title_col) if title_col else row.get("Title"), "Beekeeping & Hive Management Training"),
+                "date": clean_date_val(row.get("Date")) or "Unknown",
                 "ward": clean_field(row.get("Ward"), "Unknown"),
-                "monitor": clean_field(row.get("Names"), "Unknown Officer"),
+                "monitor": clean_field(row.get("Names") or row.get("Monitor"), "Unknown Officer"),
                 "attendants_raw": clean_field(row.get("Attendants"), ""),
                 "attendants_total": tot,
                 "attendants_male": m,
                 "attendants_female": f,
                 "comments": clean_field(row.get("Comments"), ""),
-                "photo_1": clean_img(row.get("Photo 1")),
-                "photo_2": clean_img(row.get("Photo 2")),
-                "audio": clean_img(row.get("Field Audio"))
+                "photo_1": clean_img_global(row.get("Photo 1")),
+                "photo_2": clean_img_global(row.get("Photo 2")),
+                "audio": clean_img_global(row.get("Field Audio")),
             })
-            
-        # Mocking 2 additional planned sessions to showcase Recharts visuals beautifully
-        if len(trainings) == 1:
-            trainings.append({
-                "id": "training-mock-1",
-                "title": "Hive Colonization & Swarm Catching Methods",
-                "date": "2026-05-15",
-                "ward": "Ward 7",
-                "monitor": "S Kangiso",
-                "attendants_raw": "12 male and 15 females",
-                "attendants_total": 27,
-                "attendants_male": 12,
-                "attendants_female": 15,
-                "comments": "Covered catch-box preparation, waxing, and swarm relocation procedures.",
-                "photo_1": None,
-                "photo_2": None,
-                "audio": None
-            })
-            trainings.append({
-                "id": "training-mock-2",
-                "title": "Honey Harvesting, Extraction & Processing",
-                "date": "2026-05-28",
-                "ward": "Ward 24",
-                "monitor": "D Tagarapano",
-                "attendants_raw": "14 male and 22 females",
-                "attendants_total": 36,
-                "attendants_male": 14,
-                "attendants_female": 22,
-                "comments": "Addressed honey maturity indices, smoker safety, honey presses, and container hygiene.",
-                "photo_1": None,
-                "photo_2": None,
-                "audio": None
-            })
-            total_attendants += (27 + 36)
-            total_male += (12 + 14)
-            total_female += (15 + 22)
-            
+
         return {
             "summary": {
                 "trainings_conducted": len(trainings),
                 "attendants_total": total_attendants,
                 "attendants_male": total_male,
-                "attendants_female": total_female
+                "attendants_female": total_female,
             },
-            "trainings": trainings
+            "trainings": trainings[:80],
         }
     except Exception as e:
         logger.error(f"Error fetching beekeeping trainings: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        return {
+            "summary": {
+                "trainings_conducted": 0,
+                "attendants_total": 0,
+                "attendants_male": 0,
+                "attendants_female": 0,
+            },
+            "trainings": [],
+            "detail": str(e),
+        }
 
 @app.get("/api/workflow/beekeeping/status/outcomes")
 def get_beekeeping_status_outcomes():
     """Retrieve hive colonization status, types, estimated honey yield, and beekeeper log cards."""
     try:
-        df = load_layer("beekeeping")
+        df = safe_load_layer("beekeeping")
+        empty_status = {
+            "summary": {
+                "total_hives": 0,
+                "colonized": 0,
+                "uncolonized": 0,
+                "decolonized": 0,
+                "total_honey_yield_kg": 0.0,
+                "by_hive_type": {},
+                "by_bee_type": {},
+                "by_quality": {},
+                "by_ward": {},
+            },
+            "logs": [],
+        }
+        if df.empty:
+            return empty_status
 
-        
-        # Filter valid records
-        df_valid = df[df["Beekeepr"].notna() | df["Status"].notna()]
+        beekeeper_col = first_matching_col(df, "Beekeepr", "Beekeeper", "Name")
+        status_col = first_matching_col(df, "Status", "Colonized")
+        mask = pd.Series(True, index=df.index)
+        if beekeeper_col or status_col:
+            mask = pd.Series(False, index=df.index)
+            if beekeeper_col:
+                mask = mask | df[beekeeper_col].notna()
+            if status_col:
+                mask = mask | df[status_col].notna()
+        df_valid = df[mask]
         
         total_hives = 0
         total_colonized = 0
@@ -3093,7 +3293,7 @@ def get_beekeeping_status_outcomes():
         for idx, row in df_valid.iterrows():
             total_hives += 1
             
-            status = str(row.get("Status", "")).strip().lower()
+            status = str(row.get(status_col) if status_col else row.get("Status", "")).strip().lower()
             comments = str(row.get("Comments", "")).strip().lower()
             
             # Determine colonization status
@@ -3108,7 +3308,7 @@ def get_beekeeping_status_outcomes():
                 total_uncolonized += 1
                 
             # Honey Yield parsing
-            qty_raw = row.get("Qauntity")
+            qty_raw = row.get("Qauntity") if "Qauntity" in row.index else row.get("Quantity")
             qty_val = parse_yield(qty_raw)
             if is_colonized == "Colonized":
                 total_honey_yield += qty_val
@@ -3141,12 +3341,12 @@ def get_beekeeping_status_outcomes():
             if ward and ward != "nan" and ward != "Unknown" and ward != "None":
                 by_ward[ward] = by_ward.get(ward, 0) + 1
                 
-            photo_1 = clean_img(row.get("Photos 1"))
-            photo_2 = clean_img(row.get("Photos 2"))
+            photo_1 = clean_img_global(row.get("Photos 1") or row.get("Photo 1") or row.get("Photos"))
+            photo_2 = clean_img_global(row.get("Photos 2") or row.get("Photo 2"))
             
             logs.append({
                 "id": f"hive-{idx}",
-                "beekeeper": clean_field(row.get("Beekeepr"), "Unknown Beekeeper"),
+                "beekeeper": clean_field(row.get(beekeeper_col) if beekeeper_col else row.get("Beekeepr"), "Unknown Beekeeper"),
                 "hive_type": htype,
                 "hive_id": clean_field(row.get("Hive ID"), f"Hive-{idx}"),
                 "ward": clean_field(ward, "Unknown"),
@@ -3162,20 +3362,16 @@ def get_beekeeping_status_outcomes():
                 "quality": quality,
                 "comments": clean_field(row.get("Comments"), ""),
                 "monitor": clean_field(row.get("Monitor"), "Unknown"),
-                "date": str(row.get("Date"))[:10] if row.get("Date") else "Unknown",
+                "date": clean_date_val(row.get("Date")) or "Unknown",
                 "photo_1": photo_1,
                 "photo_2": photo_2
             })
-            
-        if total_decolonized == 0:
-            total_decolonized = 5
-            total_uncolonized -= 5
             
         return {
             "summary": {
                 "total_hives": total_hives,
                 "colonized": total_colonized,
-                "uncolonized": total_uncolonized,
+                "uncolonized": max(0, total_uncolonized),
                 "decolonized": total_decolonized,
                 "total_honey_yield_kg": round(total_honey_yield, 1),
                 "by_hive_type": by_hive_type,
@@ -3183,11 +3379,25 @@ def get_beekeeping_status_outcomes():
                 "by_quality": by_quality,
                 "by_ward": by_ward
             },
-            "logs": logs
+            "logs": logs[:100]
         }
     except Exception as e:
         logger.error(f"Error fetching beekeeping status: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        return {
+            "summary": {
+                "total_hives": 0,
+                "colonized": 0,
+                "uncolonized": 0,
+                "decolonized": 0,
+                "total_honey_yield_kg": 0.0,
+                "by_hive_type": {},
+                "by_bee_type": {},
+                "by_quality": {},
+                "by_ward": {},
+            },
+            "logs": [],
+            "detail": str(e),
+        }
 
 @app.get("/api/workflow/beekeeping")
 def get_beekeeping_workflow():
@@ -3200,46 +3410,35 @@ def get_beekeeping_workflow():
     
     # 1. Apiary Site Suitability
     try:
-        df = load_layer("apiary_assessment")
+        df = safe_load_layer("apiary_assessment")
 
         result["apiary_suitability"]["total_evaluated_sites"] = int(len(df))
         
         if len(df) > 0:
-            def map_scale(val):
-                val_str = str(val).lower()
-                if "excellent" in val_str or "high" in val_str or "yes" in val_str:
-                    return 4.0
-                if "good" in val_str or "medium" in val_str:
-                    return 3.0
-                if "fair" in val_str or "low" in val_str:
-                    return 2.0
-                if "poor" in val_str or "no" in val_str:
-                    return 1.0
-                return 3.0
-                
-            df["Flowers_score"] = df["Flowers"].apply(map_scale)
-            df["Water_score"] = df["Water"].apply(map_scale)
-            df["Sunlight_score"] = df["Sunlight"].apply(map_scale)
-            df["Security_score"] = df["Security"].apply(map_scale)
-            
-            result["apiary_suitability"]["average_scores"] = {
-                "flowers": round(float(df["Flowers_score"].mean()), 1),
-                "water": round(float(df["Water_score"].mean()), 1),
-                "sunlight": round(float(df["Sunlight_score"].mean()), 1),
-                "security": round(float(df["Security_score"].mean()), 1)
-            }
+            flowers_col = first_matching_col(df, "Flowers", "Flora")
+            water_col = first_matching_col(df, "Water")
+            sun_col = first_matching_col(df, "Sunlight", "Shade")
+            sec_col = first_matching_col(df, "Security")
+            if flowers_col:
+                result["apiary_suitability"]["average_scores"] = {
+                    "flowers": round(float(df[flowers_col].apply(map_suitability_score).mean()), 1),
+                    "water": round(float(df[water_col].apply(map_suitability_score).mean()), 1) if water_col else 0.0,
+                    "sunlight": round(float(df[sun_col].apply(map_suitability_score).mean()), 1) if sun_col else 0.0,
+                    "security": round(float(df[sec_col].apply(map_suitability_score).mean()), 1) if sec_col else 0.0,
+                }
     except Exception as e:
         logger.warning(f"Error compiling apiary suitability stats: {e}")
 
     # 2. Trainings
     try:
-        df = load_layer("meetings")
+        df = safe_load_layer("meetings")
 
         # Regex search for beekeeping meetings
-        beekeeping_trainings = df[
-            (df["MeetingTyp"].astype(str) == "2") & 
-            (df["Title"].astype(str).str.lower().str.contains(r"\bbee\b|\bbees\b|apiary|honey|beekeeping", regex=True, na=False))
-        ]
+        title_col = first_matching_col(df, "Title", "Meeting Title")
+        if title_col and not df.empty:
+            beekeeping_trainings = df[df[title_col].astype(str).str.lower().str.contains(r"bee|apiary|honey|apiculture", na=False)]
+        else:
+            beekeeping_trainings = df.iloc[0:0]
         result["trainings"]["conducted"] = int(len(beekeeping_trainings))
         
         total_att = 0
@@ -3260,25 +3459,37 @@ def get_beekeeping_workflow():
 
     # 3. Hive Colonization
     try:
-        df = load_layer("beekeeping")
+        df = safe_load_layer("beekeeping")
 
         result["hive_colonization"]["total_hives"] = int(len(df))
         
-        df["Status_Mapped"] = df["Status"].astype(str).map(BEEKEEPING_STATUS_MAPPING).fillna("UnColonized")
+        status_col = first_matching_col(df, "Status", "Colonized")
+        if status_col:
+            df["Status_Mapped"] = df[status_col].astype(str).map(BEEKEEPING_STATUS_MAPPING).fillna("UnColonized")
+        else:
+            df["Status_Mapped"] = "UnColonized"
         colonized = df[df["Status_Mapped"] == "Colonized"]
         uncolonized = df[df["Status_Mapped"] == "UnColonized"]
-        decolonized = df[df["Comments"].astype(str).str.lower().str.contains("decolon|abandon|left", na=False)]
+        comments_col = first_matching_col(df, "Comments")
+        if comments_col:
+            decolonized = df[df[comments_col].astype(str).str.lower().str.contains("decolon|abandon|left", na=False)]
+        else:
+            decolonized = df.iloc[0:0]
         
         result["hive_colonization"]["colonized"] = int(len(colonized))
         result["hive_colonization"]["uncolonized"] = int(len(uncolonized))
         result["hive_colonization"]["decolonized"] = int(len(decolonized))
         
-        type_counts = df["Hive Type"].astype(str).value_counts().to_dict()
-        result["hive_colonization"]["types"] = {k: int(v) for k, v in type_counts.items() if k != "nan" and k != "None"}
+        type_col = first_matching_col(df, "Hive Type", "HiveType")
+        if type_col:
+            type_counts = df[type_col].astype(str).value_counts().to_dict()
+            result["hive_colonization"]["types"] = {k: int(v) for k, v in type_counts.items() if k != "nan" and k != "None"}
         
-        df["Quality_Mapped"] = df["Quality"].astype(str).map(BEEKEEPING_QUALITY_MAPPING).fillna("Unknown")
-        quality_counts = df["Quality_Mapped"].value_counts().to_dict()
-        result["hive_colonization"]["quality"] = {k: int(v) for k, v in quality_counts.items() if k != "nan" and k != "None" and k != "Unknown"}
+        quality_col = first_matching_col(df, "Quality")
+        if quality_col:
+            df["Quality_Mapped"] = df[quality_col].astype(str).map(BEEKEEPING_QUALITY_MAPPING).fillna("Unknown")
+            quality_counts = df["Quality_Mapped"].value_counts().to_dict()
+            result["hive_colonization"]["quality"] = {k: int(v) for k, v in quality_counts.items() if k != "nan" and k != "None" and k != "Unknown"}
     except Exception as e:
         logger.warning(f"Error compiling hive colonization stats: {e}")
         
@@ -3292,12 +3503,12 @@ def get_verifications_workflow():
     
     # 1. Out-Planting Verifications
     try:
-        df = load_layer("verification")
+        df = safe_load_layer("verification")
 
         for idx, row in df.iterrows():
             monitor = row.get("Monitor") or row.get("Name") or "Unknown Officer"
             clean_monitor = clean_field(monitor, "Unknown Officer")
-            date_val = str(row.get("Date"))[:10] if row.get("Date") else "Unknown Date"
+            date_val = clean_date_val(row.get("Date"))
             
             verifications.append({
                 "id": f"outplanting-{row.get('fid', idx)}",
@@ -3307,22 +3518,21 @@ def get_verifications_workflow():
                 "grower": clean_field(row.get("Grower Name"), "Unknown"),
                 "ward": clean_field(row.get("Ward"), ""),
                 "observations": clean_field(row.get("Findings"), ""),
-                "recommendations": clean_field(row.get("Conclusion"), "None"),
+                "recommendations": clean_field(row.get("Conclusion"), ""),
                 "photo": clean_img_global(row.get("Photo 1")),
                 "audio": clean_img_global(row.get("Field Audio"))
             })
-            officers[clean_monitor] = officers.get(clean_monitor, 0) + 1
     except Exception as e:
         logger.warning(f"Error reading outplanting verifications: {e}")
 
     # 2. Nursery Verifications
     try:
-        df = load_layer("nurseries_verification")
+        df = safe_load_layer("nurseries_verification")
 
         for idx, row in df.iterrows():
             assessor = row.get("Name") or "Unknown Officer"
             clean_assessor = clean_field(assessor, "Unknown Officer")
-            date_val = str(row.get("Date"))[:10] if row.get("Date") else "Unknown Date"
+            date_val = clean_date_val(row.get("Date"))
             
             verifications.append({
                 "id": f"nursery-{idx}",
@@ -3332,22 +3542,21 @@ def get_verifications_workflow():
                 "grower": clean_field(row.get("Nursery Name"), "Unknown"),
                 "ward": clean_field(row.get("Region"), ""),
                 "observations": clean_field(row.get("Observations"), ""),
-                "recommendations": clean_field(row.get("Recommendations"), "None"),
+                "recommendations": clean_field(row.get("Recommendations"), ""),
                 "photo": clean_img_global(row.get("Photo")),
                 "audio": clean_img_global(row.get("Audio"))
             })
-            officers[clean_assessor] = officers.get(clean_assessor, 0) + 1
     except Exception as e:
         logger.warning(f"Error reading nursery verifications: {e}")
 
     # 3. Livelihoods Infrastructure Verifications
     try:
-        df = load_layer("infrastructure_verification")
+        df = safe_load_layer("infrastructure_verification")
 
         for idx, row in df.iterrows():
             assessor = row.get("Assessor") or "Unknown Officer"
             clean_assessor = clean_field(assessor, "Unknown Officer")
-            date_val = str(row.get("Date"))[:10] if row.get("Date") else "Unknown Date"
+            date_val = clean_date_val(row.get("Date"))
             
             verifications.append({
                 "id": f"infra-{idx}",
@@ -3357,19 +3566,24 @@ def get_verifications_workflow():
                 "grower": clean_field(row.get("Type"), "Unknown"),
                 "ward": clean_field(row.get("Ward"), ""),
                 "observations": clean_field(row.get("Comments"), ""),
-                "recommendations": f"Stage: {clean_field(row.get('Stage'), 'Unknown')}",
+                "recommendations": f"Stage: {clean_field(row.get('Stage'), 'Unknown')}" if row.get("Stage") is not None else "",
                 "photo": clean_img_global(row.get("Photos")),
                 "audio": None
             })
-            officers[clean_assessor] = officers.get(clean_assessor, 0) + 1
     except Exception as e:
         logger.warning(f"Error reading infrastructure verifications: {e}")
         
-    verifications = sorted(verifications, key=lambda x: x["date"], reverse=True)
+    verifications = [v for v in verifications if audit_record_useful(v)]
+    verifications = sorted(verifications, key=lambda x: x.get("date") or "", reverse=True)[:150]
+    officers = {}
+    for v in verifications:
+        name = v.get("officer") or ""
+        if name and name.lower() not in ("nan", "none", "unknown officer"):
+            officers[name] = officers.get(name, 0) + 1
     
     return {
         "verifications": verifications,
-        "officers": [{"name": k, "count": v} for k, v in officers.items() if k and k != "nan" and k != "None"]
+        "officers": [{"name": k, "count": v} for k, v in officers.items()]
     }
 
 
