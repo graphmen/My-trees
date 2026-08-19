@@ -630,6 +630,43 @@ def load_layer(layer_name: str, need_geom: bool = False) -> gpd.GeoDataFrame:
     return _layer_cache[cache_key].copy()
 
 
+def _json_cache_bytes(payload) -> bytes:
+    def _default(value):
+        if hasattr(value, "item"):
+            return value.item()
+        return str(value)
+    return json.dumps(payload, default=_default).encode("utf-8")
+
+
+def _warm_dashboard_cache():
+    """Pre-compute overview KPIs and charts so the first dashboard request is instant."""
+    with _sync_lock:
+        _sync_status["current_file"] = "Preparing dashboard numbers..."
+    try:
+        kpis = get_kpis()
+        set_cached_response("/api/kpis", _json_cache_bytes(kpis))
+        logger.info(
+            "[WARM] KPIs trees_planted=%s meetings=%s",
+            kpis.get("trees_planted"),
+            kpis.get("meetings_count"),
+        )
+    except Exception as e:
+        logger.warning(f"[WARM] KPIs failed: {e}")
+    try:
+        species = get_survival_by_species()
+        set_cached_response("/api/charts/survival_by_species", _json_cache_bytes(species))
+    except Exception as e:
+        logger.warning(f"[WARM] species chart failed: {e}")
+    try:
+        planting = get_planting_over_time()
+        set_cached_response("/api/charts/planting_over_time", _json_cache_bytes(planting))
+    except Exception as e:
+        logger.warning(f"[WARM] planting chart failed: {e}")
+    with _sync_lock:
+        if _sync_status.get("current_file") == "Preparing dashboard numbers...":
+            _sync_status["current_file"] = ""
+
+
 @app.get("/api/cache/clear")
 def clear_cache():
     """Clear the in-memory layer cache to reload fresh data after a QField sync."""
@@ -3234,6 +3271,7 @@ _sync_status = {
     "downloaded": 0,
     "skipped": 0,
     "total_files": 0,
+    "attachments_ignored": 0,
     "current_file": "",
     "errors": [],
     "error_count": 0
@@ -3579,27 +3617,33 @@ def run_background_sync(cfg, headers, url, project_id):
             flush_kafka_producer()
             return
 
-        with _sync_lock:
-            _sync_status["total_files"] = len(remote_files)
-            _sync_status["downloaded"] = 0
-            _sync_status["skipped"] = 0
-            _sync_status["error_count"] = 0
-            _sync_status["errors"] = []
-
-        # Spatial file extensions to download on startup (skip media attachments)
+        # Spatial files drive the dashboard. Photos/audio are not counted as skipped.
         SPATIAL_EXTS = {".gpkg", ".qgs", ".qgz", ".json", ".geojson"}
-
+        spatial_files = []
+        attachments_ignored = 0
         for f_info in remote_files:
             name = f_info.get("name")
             if not name:
                 continue
-
-            # Skip media/attachment files to speed up startup sync dramatically
             ext = os.path.splitext(name)[1].lower()
             is_attachment = f_info.get("is_attachment", False)
             if is_attachment or (ext and ext not in SPATIAL_EXTS):
-                with _sync_lock:
-                    _sync_status["skipped"] += 1
+                attachments_ignored += 1
+                continue
+            spatial_files.append(f_info)
+
+        with _sync_lock:
+            _sync_status["total_files"] = len(spatial_files)
+            _sync_status["downloaded"] = 0
+            _sync_status["skipped"] = 0
+            _sync_status["attachments_ignored"] = attachments_ignored
+            _sync_status["error_count"] = 0
+            _sync_status["errors"] = []
+            _sync_status["current_file"] = "Checking project databases..."
+
+        for f_info in spatial_files:
+            name = f_info.get("name")
+            if not name:
                 continue
 
             with _sync_lock:
@@ -3665,9 +3709,10 @@ def run_background_sync(cfg, headers, url, project_id):
                     _sync_status["error_count"] += 1
                     _sync_status["errors"].append(f"{name}: {str(e)}")
 
-        # Clear cached geopackages
+        # Clear stale layer/API cache, then warm overview numbers before UI shows success
         clear_cache()
-        
+        _warm_dashboard_cache()
+
         with _sync_lock:
             if _sync_status["error_count"] > 0:
                 _sync_status["status"] = "error"
@@ -3815,6 +3860,7 @@ def _trigger_sync(raise_on_error: bool = False) -> dict:
             "downloaded": 0,
             "skipped": 0,
             "total_files": 0,
+            "attachments_ignored": 0,
             "current_file": "Initializing sync...",
             "errors": [],
             "error_count": 0
@@ -3830,8 +3876,14 @@ def _startup_sync():
     try:
         result = _trigger_sync(raise_on_error=False)
         logger.info(f"[STARTUP SYNC] {result}")
+        if result.get("status") in ("skipped", "error"):
+            _warm_dashboard_cache()
     except Exception as e:
         logger.error(f"[STARTUP SYNC] Unexpected error: {e}")
+        try:
+            _warm_dashboard_cache()
+        except Exception:
+            pass
 
 
 @app.post("/api/qfieldcloud/sync")

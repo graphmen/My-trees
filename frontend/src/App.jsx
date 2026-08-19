@@ -118,6 +118,42 @@ async function apiFetch(path, fetchOpts = {}, retryOpts = {}) {
   );
 }
 
+const EMPTY_KPIS = {
+  trees_planted: 0,
+  trees_target: 0,
+  overall_survival_rate: 0.0,
+  active_growers: 0,
+  colonized_hives: 0,
+  total_hives: 0,
+  nursery_seedlings: 0,
+  nursery_ready: 0,
+  patrol_distance_km: 0.0,
+  meetings_count: 0,
+  fire_incidents: 0
+};
+
+function readDashboardCache(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+}
+
+function writeDashboardCache(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* quota / private mode */
+  }
+}
+
+function kpisLookEmpty(kpis) {
+  return !kpis || ((Number(kpis.trees_planted) || 0) === 0 && (Number(kpis.meetings_count) || 0) === 0);
+}
+
 // Custom component to dynamically control map view recentering
 function MapRecenter({ center, zoom }) {
   const map = useMap();
@@ -165,24 +201,12 @@ function MarkerClusterGroup({ data, activeTab, onEachFeature, pointToLayer, styl
 }
 
 function App() {
-  const [kpis, setKpis] = useState({
-    trees_planted: 0,
-    trees_target: 0,
-    overall_survival_rate: 0.0,
-    active_growers: 0,
-    colonized_hives: 0,
-    total_hives: 0,
-    nursery_seedlings: 0,
-    nursery_ready: 0,
-    patrol_distance_km: 0.0,
-    meetings_count: 0,
-    fire_incidents: 0
-  });
+  const [kpis, setKpis] = useState(() => readDashboardCache("mytrees_kpis", EMPTY_KPIS));
 
   const [activeTab, setActiveTab] = useState('overview'); // overview, nurseries, beekeeping, ops, fire, explorer, report
   const [dashboardSubTab, setDashboardSubTab] = useState('dashboard'); // dashboard, map
   const [meetingsSubTab, setMeetingsSubTab] = useState('outcomes'); // outcomes, map
-  const [plantingOverTime, setPlantingOverTime] = useState([]);
+  const [plantingOverTime, setPlantingOverTime] = useState(() => readDashboardCache("mytrees_planting_over_time", []));
   const [meetingsOutcomes, setMeetingsOutcomes] = useState(null);
   const [eligibilitySubTab, setEligibilitySubTab] = useState('outcomes'); // outcomes, map
   const [eligibilityOutcomes, setEligibilityOutcomes] = useState(null);
@@ -248,7 +272,7 @@ function App() {
   const rowsPerPage = 25;
 
   // Chart data
-  const [speciesChart, setSpeciesChart] = useState([]);
+  const [speciesChart, setSpeciesChart] = useState(() => readDashboardCache("mytrees_species_chart", []));
   const [timeline, setTimeline] = useState([]);
 
   // Map position
@@ -293,7 +317,11 @@ function App() {
         fetchQFieldConfig();
         checkActiveSyncStatus();
       });
+    const keepAlive = setInterval(() => {
+      apiFetch("/api/health", {}, { retries: 1, timeoutMs: 15000 }).catch(() => {});
+    }, 4 * 60 * 1000);
     return () => {
+      clearInterval(keepAlive);
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
       }
@@ -352,6 +380,10 @@ function App() {
               spatialCacheRef.current = {};
               
               loadSystemMetrics();
+              window.setTimeout(() => {
+                setShowSyncOverlay(false);
+                setSyncStatus(null);
+              }, 2200);
             }
           }
         })
@@ -366,7 +398,7 @@ function App() {
     };
 
     poll();
-    pollIntervalRef.current = setInterval(poll, 2500);
+    pollIntervalRef.current = setInterval(poll, 1500);
   };
 
   const fetchQFieldConfig = () => {
@@ -387,7 +419,7 @@ function App() {
 
   // ─── Lean startup: only fetch what Overview needs ───────────────────────────
   const loadSystemMetrics = () => {
-    setConnectionStatus('connecting');
+    setConnectionStatus((prev) => (kpisLookEmpty(kpis) ? 'connecting' : prev));
 
     // 1. KPIs — headline numbers for the Overview dashboard
     apiFetch(`/api/kpis`)
@@ -396,30 +428,41 @@ function App() {
         return res.json();
       })
       .then(data => {
-        setKpis(data);
+        if (!kpisLookEmpty(data)) {
+          setKpis(data);
+          writeDashboardCache("mytrees_kpis", data);
+        }
         setConnectionStatus('connected');
       })
       .catch(err => {
         console.error(err);
-        setConnectionStatus('failed');
+        setConnectionStatus(kpisLookEmpty(kpis) ? 'failed' : 'connected');
       });
 
     // 2. Species chart — used in Overview + Report generator
     apiFetch(`/api/charts/survival_by_species`)
       .then(res => res.ok ? res.json() : [])
-      .then(data => setSpeciesChart(Array.isArray(data) ? data : []))
+      .then(data => {
+        if (Array.isArray(data) && data.length > 0) {
+          setSpeciesChart(data);
+          writeDashboardCache("mytrees_species_chart", data);
+        }
+      })
       .catch(err => {
         console.error(err);
-        setSpeciesChart([]);
       });
 
     // 3. Planting over time — used in Overview timeline chart
     apiFetch(`/api/charts/planting_over_time`)
       .then(res => res.ok ? res.json() : [])
-      .then(data => setPlantingOverTime(Array.isArray(data) ? data : []))
+      .then(data => {
+        if (Array.isArray(data) && data.length > 0) {
+          setPlantingOverTime(data);
+          writeDashboardCache("mytrees_planting_over_time", data);
+        }
+      })
       .catch(err => {
         console.error(err);
-        setPlantingOverTime([]);
       });
 
     // 4. Timeline — needed for Overview activity feed
@@ -10335,12 +10378,16 @@ function App() {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: '#ffffff' }}>
                   {syncStatus.status === 'syncing' && 'Synchronizing Server'}
-                  {syncStatus.status === 'success' && 'Sync Completed Successfully'}
+                  {syncStatus.status === 'success' && 'Dashboard is ready'}
                   {syncStatus.status === 'error' && 'Sync Encountered Errors'}
                 </h3>
                 <p style={{ margin: '2px 0 0 0', fontSize: '12.5px', color: '#94a3b8', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                  {syncStatus.status === 'syncing' && 'Fetching and updating restoration data...'}
-                  {syncStatus.status === 'success' && 'All project databases and media are up to date.'}
+                  {syncStatus.status === 'syncing' && (syncStatus.current_file === 'Preparing dashboard numbers...'
+                    ? 'Loading restoration numbers...'
+                    : 'Checking project databases...')}
+                  {syncStatus.status === 'success' && (syncStatus.downloaded > 0
+                    ? 'Project databases updated. Overview numbers are ready.'
+                    : 'Already on the server — overview numbers are ready.')}
                   {syncStatus.status === 'error' && 'Some files failed to synchronize.'}
                 </p>
               </div>
@@ -10378,15 +10425,15 @@ function App() {
             {/* Stats Counter Badges */}
             <div style={{ display: 'flex', gap: '10px', marginBottom: '20px' }}>
               <div style={{ flex: 1, backgroundColor: 'rgba(255, 255, 255, 0.04)', border: '1px solid rgba(255, 255, 255, 0.05)', borderRadius: '8px', padding: '10px', textAlign: 'center' }}>
-                <div style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#94a3b8', fontWeight: 600 }}>Total Files</div>
+                <div style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#94a3b8', fontWeight: 600 }}>Datasets</div>
                 <div style={{ fontSize: '18px', fontWeight: 700, color: '#ffffff', marginTop: '4px' }}>{syncStatus.total_files}</div>
               </div>
               <div style={{ flex: 1, backgroundColor: 'rgba(64, 126, 82, 0.08)', border: '1px solid rgba(64, 126, 82, 0.15)', borderRadius: '8px', padding: '10px', textAlign: 'center' }}>
-                <div style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#72bb95', fontWeight: 600 }}>Downloaded</div>
+                <div style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#72bb95', fontWeight: 600 }}>Updated</div>
                 <div style={{ fontSize: '18px', fontWeight: 700, color: '#a7f3d0', marginTop: '4px' }}>{syncStatus.downloaded}</div>
               </div>
               <div style={{ flex: 1, backgroundColor: 'rgba(255, 255, 255, 0.04)', border: '1px solid rgba(255, 255, 255, 0.05)', borderRadius: '8px', padding: '10px', textAlign: 'center' }}>
-                <div style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#94a3b8', fontWeight: 600 }}>Skipped</div>
+                <div style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#94a3b8', fontWeight: 600 }}>Up to date</div>
                 <div style={{ fontSize: '18px', fontWeight: 700, color: '#e2e8f0', marginTop: '4px' }}>{syncStatus.skipped}</div>
               </div>
               {syncStatus.error_count > 0 && (
