@@ -999,30 +999,54 @@ def _get_kpis_slow_fallback() -> dict:
     # 3. Active Growers
     try:
         df = load_layer("plots_mapping")
-        if "Grower ID" in df.columns:
-            kpis["active_growers"] = int(df["Grower ID"].nunique())
-        elif "Grower" in df.columns:
-            kpis["active_growers"] = int(df["Grower"].nunique())
+        for col in ("Grower ID", "Grower", "Grower Name"):
+            if col in df.columns:
+                kpis["active_growers"] = int(df[col].nunique())
+                break
     except Exception as e:
         logger.warning(f"Error calculating growers KPI: {e}")
+    if not kpis["active_growers"]:
+        try:
+            df = load_layer("planting")
+            for col in ("Grower ID", "Grower", "Grower Name"):
+                if col in df.columns:
+                    kpis["active_growers"] = int(df[col].dropna().astype(str).nunique())
+                    break
+        except Exception as e:
+            logger.warning(f"Error calculating growers KPI from planting: {e}")
 
-    # 4. Beekeeping
+    # 4. Beekeeping — Status codes (1=Colonized) match the compiled workflow
     try:
         df = load_layer("beekeeping")
-        if "Colonized" in df.columns:
+        kpis["total_hives"] = int(df.shape[0])
+        if "Status" in df.columns:
+            mapped = df["Status"].astype(str).map(BEEKEEPING_STATUS_MAPPING)
+            kpis["colonized_hives"] = int((mapped == "Colonized").sum())
+        elif "Colonized" in df.columns:
             colonized = df[df["Colonized"].astype(str).str.lower().str.contains("yes|1|true", na=False)]
             kpis["colonized_hives"] = int(len(colonized))
-        kpis["total_hives"] = int(df.shape[0])
     except Exception as e:
         logger.warning(f"Error calculating beekeeping KPI: {e}")
 
-    # 5. Nurseries
+    # 5. Nurseries — Pocketed/Germinated/Ready, not a "Total" column
     try:
         df = load_layer("nurseries")
-        df["Total"] = pd.to_numeric(df["Total"], errors="coerce").fillna(0)
-        df["Ready to Plant"] = pd.to_numeric(df["Ready to Plant"], errors="coerce").fillna(0)
-        kpis["nursery_seedlings"] = int(df["Total"].sum())
-        kpis["nursery_ready"] = int(df["Ready to Plant"].sum())
+        ready = pd.to_numeric(df["Ready to Plant"], errors="coerce").fillna(0) if "Ready to Plant" in df.columns else pd.Series(dtype=float)
+        if "Seeds Germinated" in df.columns:
+            germinated = pd.to_numeric(df["Seeds Germinated"], errors="coerce").fillna(0)
+        elif "Germinated" in df.columns:
+            germinated = pd.to_numeric(df["Germinated"], errors="coerce").fillna(0)
+        else:
+            germinated = pd.Series(dtype=float)
+        pocketed = pd.to_numeric(df["Pocketed"], errors="coerce").fillna(0) if "Pocketed" in df.columns else pd.Series(dtype=float)
+        total_col = pd.to_numeric(df["Total"], errors="coerce").fillna(0) if "Total" in df.columns else pd.Series(dtype=float)
+        kpis["nursery_ready"] = int(ready.sum()) if len(ready) else 0
+        seedlings = int(total_col.sum()) if len(total_col) else 0
+        if not seedlings:
+            seedlings = int(germinated.sum()) if len(germinated) else 0
+        if not seedlings:
+            seedlings = int(pocketed.sum()) if len(pocketed) else 0
+        kpis["nursery_seedlings"] = seedlings
     except Exception as e:
         logger.warning(f"Error calculating nursery KPI: {e}")
 
@@ -1326,7 +1350,7 @@ def get_meetings_outcomes():
                 "by_type": by_type,
                 "by_ward": by_ward
             },
-            "meetings": meetings_list
+            "meetings": meetings_list[:200]
         }
     except Exception as e:
         logger.error(f"Error fetching meetings outcomes: {e}", exc_info=True)
@@ -2186,7 +2210,7 @@ def get_survival_outcomes():
                 "by_ward_alive": by_ward_alive,
                 "by_ward_survival_avg": ward_survival_avg
             },
-            "survival": survival_list
+            "survival": survival_list[:200]
         }
     except Exception as e:
         logger.error(f"Error fetching survival outcomes: {e}", exc_info=True)
@@ -2330,7 +2354,7 @@ def get_fire_outcomes():
                 "by_fireguard": by_fireguard,
                 "by_slashed": by_slashed
             },
-            "incidents": incidents_list
+            "incidents": incidents_list[:200]
         }
     except Exception as e:
         logger.error(f"Error fetching fire outcomes: {e}", exc_info=True)
@@ -2480,7 +2504,7 @@ def get_planting_outcomes():
                 "by_ward_target": by_ward_target,
                 "top_species": top_species_sorted
             },
-            "planting": planting_list
+            "planting": planting_list[:200]
         }
     except Exception as e:
         logger.error(f"Error fetching planting outcomes: {e}", exc_info=True)

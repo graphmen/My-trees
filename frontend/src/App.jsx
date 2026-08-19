@@ -154,6 +154,36 @@ function kpisLookEmpty(kpis) {
   return !kpis || ((Number(kpis.trees_planted) || 0) === 0 && (Number(kpis.meetings_count) || 0) === 0);
 }
 
+function applyWorkflowMetrics(prev, outplanting, nursery, beekeeping) {
+  const next = { ...prev };
+  if (outplanting?.planting) {
+    if ((outplanting.planting.planted || 0) > (Number(next.trees_planted) || 0)) {
+      next.trees_planted = Number(outplanting.planting.planted) || next.trees_planted;
+    }
+    if ((outplanting.planting.target || 0) > (Number(next.trees_target) || 0)) {
+      next.trees_target = Number(outplanting.planting.target) || next.trees_target;
+    }
+  }
+  if ((outplanting?.fire?.incidents || 0) > (Number(next.fire_incidents) || 0)) {
+    next.fire_incidents = outplanting.fire.incidents;
+  }
+  if ((outplanting?.plot_eligibility?.qualified || 0) > (Number(next.active_growers) || 0)) {
+    next.active_growers = outplanting.plot_eligibility.qualified;
+  }
+  const prod = nursery?.nursery_production;
+  if (prod) {
+    const seedlings = Number(prod.germinated || prod.pocketed || 0);
+    if (seedlings > (Number(next.nursery_seedlings) || 0)) next.nursery_seedlings = seedlings;
+    if ((prod.ready || 0) > (Number(next.nursery_ready) || 0)) next.nursery_ready = prod.ready;
+  }
+  const hives = beekeeping?.hive_colonization;
+  if (hives) {
+    if ((hives.total_hives || 0) > (Number(next.total_hives) || 0)) next.total_hives = hives.total_hives;
+    if ((hives.colonized || 0) > (Number(next.colonized_hives) || 0)) next.colonized_hives = hives.colonized;
+  }
+  return next;
+}
+
 function mergeKpisFromCharts(prev, species, planting) {
   const next = { ...prev };
   if (Array.isArray(planting) && planting.length) {
@@ -500,13 +530,41 @@ function App() {
         console.error(err);
         setTimeline([]);
       });
+
+    const applyCompiled = (outplanting, nursery, beekeeping) => {
+      if (outplanting) setOutplantingMetrics(outplanting);
+      if (nursery) setNurseryMetrics(nursery);
+      if (beekeeping) setBeekeepingMetrics(beekeeping);
+      setKpis(prev => {
+        const next = applyWorkflowMetrics(prev, outplanting, nursery, beekeeping);
+        if (!kpisLookEmpty(next) || next.trees_target || next.nursery_seedlings || next.total_hives) {
+          writeDashboardCache("mytrees_kpis", next);
+        }
+        return next;
+      });
+    };
+
+    apiFetch(`/api/workflow/outplanting`, {}, { retries: 2, timeoutMs: 120000 })
+      .then(res => res.ok ? res.json() : null)
+      .then(data => { if (data) applyCompiled(data, null, null); })
+      .catch(console.error);
+
+    apiFetch(`/api/workflow/nursery`, {}, { retries: 2, timeoutMs: 120000 })
+      .then(res => res.ok ? res.json() : null)
+      .then(data => { if (data) applyCompiled(null, data, null); })
+      .catch(console.error);
+
+    apiFetch(`/api/workflow/beekeeping`, {}, { retries: 2, timeoutMs: 120000 })
+      .then(res => res.ok ? res.json() : null)
+      .then(data => { if (data) applyCompiled(null, null, data); })
+      .catch(console.error);
   };
 
   // ─── Lazy per-tab data loader ────────────────────────────────────────────────
   // Each module's data is fetched only on first visit. Cached in state thereafter.
   useEffect(() => {
     const fetchTabJson = (path, setter) => {
-      apiFetch(path, {}, { retries: 2, timeoutMs: 120000 })
+      apiFetch(path, {}, { retries: 2, timeoutMs: 180000 })
         .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`${path} ${res.status}`))))
         .then(setter)
         .catch(console.error);
@@ -1737,7 +1795,7 @@ function App() {
               <span style={{ color: '#ef4444', fontWeight: 600 }}>Error: {meetingsOutcomes.detail}</span>
             ) : (
               <>
-                <RefreshCw className="active-pulse" size={18} /> Loading Meetings & Trainings Outcomes...
+                <RefreshCw className="active-pulse" size={18} /> Loading Meetings & Trainings Outcomes... first open can take a minute.
               </>
             )}
           
@@ -1975,7 +2033,7 @@ function App() {
           gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
           gap: '20px'
         }}>
-          {sortedMeetings.map((meeting) => (
+          {sortedMeetings.slice(0, 80).map((meeting) => (
             <div key={meeting.id} className="glass-panel" style={{
               padding: '20px',
               display: 'flex',
@@ -3780,7 +3838,7 @@ function App() {
           gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
           gap: '20px'
         }}>
-          {sortedAssessments.map((assess) => {
+          {sortedAssessments.slice(0, 80).map((assess) => {
             const isQualified = assess.status_group === 'Qualified';
             const isDisqualified = assess.status_group === 'Disqualified';
             
@@ -4203,7 +4261,7 @@ function App() {
           gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
           gap: '20px'
         }}>
-          {sortedLandprep.map((assess) => {
+          {sortedLandprep.slice(0, 80).map((assess) => {
             const isReady = assess.ready_status === 'Ready';
             const isNotReady = assess.ready_status === 'Not Ready';
             const complianceColor = assess.compliance_rate >= 90 ? '#407e52' : assess.compliance_rate >= 50 ? '#f59e0b' : '#ef4444';
@@ -4339,7 +4397,7 @@ function App() {
               <span style={{ color: '#ef4444', fontWeight: 600 }}>Error: {plantingOutcomes.detail}</span>
             ) : (
               <>
-                <RefreshCw className="active-pulse" size={18} /> Loading Planting Update Outcomes...
+                <RefreshCw className="active-pulse" size={18} /> Loading Planting Update Outcomes... first open can take a minute.
               </>
             )}
           
@@ -4620,7 +4678,7 @@ function App() {
           gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
           gap: '20px'
         }}>
-          {sortedPlanting.map((assess) => {
+          {sortedPlanting.slice(0, 80).map((assess) => {
             const progressRate = assess.target > 0 ? Math.round((assess.planted / assess.target) * 100) : 0;
             const progressColor = progressRate >= 90 ? '#407e52' : progressRate >= 50 ? '#f59e0b' : '#ef4444';
             
@@ -5026,7 +5084,7 @@ function App() {
           gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
           gap: '20px'
         }}>
-          {sortedSurvival.map((assess) => {
+          {sortedSurvival.slice(0, 80).map((assess) => {
             const progressColor = assess.survival_rate >= 80 ? '#407e52' : assess.survival_rate >= 50 ? '#f59e0b' : '#ef4444';
             
             return (
@@ -5435,7 +5493,7 @@ function App() {
           gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
           gap: '20px'
         }}>
-          {incidents.map((assess) => {
+          {incidents.slice(0, 80).map((assess) => {
             const recoveryRate = assess.total_trees > 0 ? Math.round((assess.survival_trees / assess.total_trees) * 100) : 0;
             const progressColor = recoveryRate >= 70 ? '#407e52' : recoveryRate >= 40 ? '#f59e0b' : '#ef4444';
             
