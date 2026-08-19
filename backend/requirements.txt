@@ -5,5 +5,5 @@ geopandas
 shapely
 requests
 pyogrio
-confluent-kafka==2.14.2
+fiona
 psycopg2-binary

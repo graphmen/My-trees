@@ -27,6 +27,9 @@ share/python-wheels/
 
 # Virtual Environments
 .env
+.env.local
+backend/.env
+.venv
 .venv
 env/
 venv/
@@ -65,3 +68,12 @@ audio/
 ~$*
 backend/*.db
 backend/*.db-journal
+
+# Firebase
+.firebase/
+firebase-debug.log
+ui-debug.log
+
+# Supabase CLI local cache
+supabase/.temp/
+

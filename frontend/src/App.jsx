@@ -72,17 +72,51 @@ let DefaultIcon = L.icon({
 });
 L.Marker.prototype.options.icon = DefaultIcon;
 
-let backendUrl = import.meta.env.VITE_BACKEND_URL || "http://127.0.0.1:8282";
+// Empty VITE_BACKEND_URL means same-origin /api (Firebase Hosting rewrite + Vite proxy).
+const configuredBackend = import.meta.env.VITE_BACKEND_URL;
+let backendUrl = configuredBackend == null ? "" : String(configuredBackend).trim();
 if (backendUrl === "mytrees-qfield-backend") {
-  backendUrl = "mytrees-qfield-backend.onrender.com";
-}
-if (backendUrl && !backendUrl.startsWith("http://") && !backendUrl.startsWith("https://")) {
+  backendUrl = "https://mytrees-qfield-backend.onrender.com";
+} else if (backendUrl && !backendUrl.startsWith("http://") && !backendUrl.startsWith("https://")) {
   backendUrl = `https://${backendUrl}`;
 }
 if (backendUrl === "https://mytrees-qfield-backend") {
   backendUrl = "https://mytrees-qfield-backend.onrender.com";
 }
-const BACKEND_URL = backendUrl;
+const BACKEND_URL = backendUrl.replace(/\/$/, "");
+
+/** Fetch the Render API with retries so free-tier cold starts do not show "Failed to fetch". */
+async function apiFetch(path, fetchOpts = {}, retryOpts = {}) {
+  const retries = retryOpts.retries ?? 5;
+  const timeoutMs = retryOpts.timeoutMs ?? 60000;
+  let lastError;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${BACKEND_URL}${path}`, {
+        ...fetchOpts,
+        signal: controller.signal,
+        mode: "cors",
+        credentials: "omit",
+      });
+      clearTimeout(timer);
+      return res;
+    } catch (err) {
+      clearTimeout(timer);
+      lastError = err;
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, 1500 * attempt));
+      }
+    }
+  }
+  const wokeSlow = lastError?.name === "AbortError";
+  throw new Error(
+    wokeSlow
+      ? "Server took too long to wake. Click Sync again in a few seconds."
+      : "Could not reach the server. Render may be waking up — click Sync again."
+  );
+}
 
 // Custom component to dynamically control map view recentering
 function MapRecenter({ center, zoom }) {
@@ -250,11 +284,15 @@ function App() {
     return () => clearTimeout(timer);
   }, [isLeftSidebarCollapsed, isInnerSidebarCollapsed, isRightSidebarCollapsed]);
 
-  // Fetch initial system data
+  // Fetch initial system data (wake Render first so the first paint is not a failure)
   useEffect(() => {
-    loadSystemMetrics();
-    fetchQFieldConfig();
-    checkActiveSyncStatus();
+    apiFetch("/api/health", {}, { retries: 6, timeoutMs: 25000 })
+      .catch(() => {})
+      .finally(() => {
+        loadSystemMetrics();
+        fetchQFieldConfig();
+        checkActiveSyncStatus();
+      });
     return () => {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
@@ -263,7 +301,7 @@ function App() {
   }, []);
 
   const checkActiveSyncStatus = () => {
-    fetch(`${BACKEND_URL}/api/qfieldcloud/sync/status`)
+    apiFetch(`/api/qfieldcloud/sync/status`)
       .then(res => res.json())
       .then(data => {
         if (data && data.status === 'syncing') {
@@ -282,7 +320,7 @@ function App() {
     }
 
     const poll = () => {
-      fetch(`${BACKEND_URL}/api/qfieldcloud/sync/status`)
+      apiFetch(`/api/qfieldcloud/sync/status`)
         .then(res => res.json())
         .then(data => {
           setSyncStatus(data);
@@ -319,6 +357,11 @@ function App() {
         })
         .catch(err => {
           console.error('Error polling sync status:', err);
+          setSyncStatus(prev => ({
+            ...prev,
+            status: 'syncing',
+            current_file: 'Waiting for server to finish sync...',
+          }));
         });
     };
 
@@ -327,7 +370,7 @@ function App() {
   };
 
   const fetchQFieldConfig = () => {
-    fetch(`${BACKEND_URL}/api/qfieldcloud/config`)
+    apiFetch(`/api/qfieldcloud/config`)
       .then(res => { if (!res.ok) throw new Error(); return res.json(); })
       .then(data => {
         setQfieldConfig(prev => ({
@@ -347,7 +390,7 @@ function App() {
     setConnectionStatus('connecting');
 
     // 1. KPIs — headline numbers for the Overview dashboard
-    fetch(`${BACKEND_URL}/api/kpis`)
+    apiFetch(`/api/kpis`)
       .then(res => {
         if (!res.ok) throw new Error('API down');
         return res.json();
@@ -362,7 +405,7 @@ function App() {
       });
 
     // 2. Species chart — used in Overview + Report generator
-    fetch(`${BACKEND_URL}/api/charts/survival_by_species`)
+    apiFetch(`/api/charts/survival_by_species`)
       .then(res => res.ok ? res.json() : [])
       .then(data => setSpeciesChart(Array.isArray(data) ? data : []))
       .catch(err => {
@@ -371,7 +414,7 @@ function App() {
       });
 
     // 3. Planting over time — used in Overview timeline chart
-    fetch(`${BACKEND_URL}/api/charts/planting_over_time`)
+    apiFetch(`/api/charts/planting_over_time`)
       .then(res => res.ok ? res.json() : [])
       .then(data => setPlantingOverTime(Array.isArray(data) ? data : []))
       .catch(err => {
@@ -380,7 +423,7 @@ function App() {
       });
 
     // 4. Timeline — needed for Overview activity feed
-    fetch(`${BACKEND_URL}/api/timeline`)
+    apiFetch(`/api/timeline`)
       .then(res => res.ok ? res.json() : [])
       .then(data => setTimeline(Array.isArray(data) ? data : []))
       .catch(err => {
@@ -395,85 +438,85 @@ function App() {
     const fetchTabData = async (tab) => {
       try {
         if (tab === 'outplanting-meetings' && !meetingsOutcomes) {
-          fetch(`${BACKEND_URL}/api/workflow/meetings/outcomes`)
+          apiFetch(`/api/workflow/meetings/outcomes`)
             .then(r => r.json()).then(setMeetingsOutcomes).catch(console.error);
-          fetch(`${BACKEND_URL}/api/workflow/outplanting`)
+          apiFetch(`/api/workflow/outplanting`)
             .then(r => r.json()).then(setOutplantingMetrics).catch(console.error);
         }
         if (tab === 'outplanting-eligibility' && !eligibilityOutcomes) {
-          fetch(`${BACKEND_URL}/api/workflow/eligibility/outcomes`)
+          apiFetch(`/api/workflow/eligibility/outcomes`)
             .then(r => r.json()).then(setEligibilityOutcomes).catch(console.error);
         }
         if (tab === 'outplanting-landprep' && !landprepOutcomes) {
-          fetch(`${BACKEND_URL}/api/workflow/landprep/outcomes`)
+          apiFetch(`/api/workflow/landprep/outcomes`)
             .then(r => r.json()).then(setLandprepOutcomes).catch(console.error);
         }
         if (tab === 'outplanting-planted' && !plantingOutcomes) {
-          fetch(`${BACKEND_URL}/api/workflow/planting/outcomes`)
+          apiFetch(`/api/workflow/planting/outcomes`)
             .then(r => r.json()).then(setPlantingOutcomes).catch(console.error);
         }
         if (tab === 'outplanting-survival' && !survivalOutcomes) {
-          fetch(`${BACKEND_URL}/api/workflow/survival/outcomes`)
+          apiFetch(`/api/workflow/survival/outcomes`)
             .then(r => r.json()).then(setSurvivalOutcomes).catch(console.error);
         }
         if (tab === 'outplanting-fire' && !fireOutcomes) {
-          fetch(`${BACKEND_URL}/api/workflow/fire/outcomes`)
+          apiFetch(`/api/workflow/fire/outcomes`)
             .then(r => r.json()).then(setFireOutcomes).catch(console.error);
         }
         if (tab === 'nursery-seed' && !seedOutcomes) {
-          fetch(`${BACKEND_URL}/api/workflow/seed/outcomes`)
+          apiFetch(`/api/workflow/seed/outcomes`)
             .then(r => r.json()).then(setSeedOutcomes).catch(console.error);
-          fetch(`${BACKEND_URL}/api/workflow/nursery`)
+          apiFetch(`/api/workflow/nursery`)
             .then(r => r.json()).then(setNurseryMetrics).catch(console.error);
         }
         if (tab === 'nursery-production' && !productionOutcomes) {
-          fetch(`${BACKEND_URL}/api/workflow/nursery-production/outcomes`)
+          apiFetch(`/api/workflow/nursery-production/outcomes`)
             .then(r => r.json()).then(setProductionOutcomes).catch(console.error);
           if (!nurseryMetrics) {
-            fetch(`${BACKEND_URL}/api/workflow/nursery`)
+            apiFetch(`/api/workflow/nursery`)
               .then(r => r.json()).then(setNurseryMetrics).catch(console.error);
           }
         }
         if (tab === 'nursery-dispatch' && !dispatchOutcomes) {
-          fetch(`${BACKEND_URL}/api/workflow/dispatch/outcomes`)
+          apiFetch(`/api/workflow/dispatch/outcomes`)
             .then(r => r.json()).then(setDispatchOutcomes).catch(console.error);
           if (!nurseryMetrics) {
-            fetch(`${BACKEND_URL}/api/workflow/nursery`)
+            apiFetch(`/api/workflow/nursery`)
               .then(r => r.json()).then(setNurseryMetrics).catch(console.error);
           }
         }
         if (tab === 'beekeeping-sites' && !sitesOutcomes) {
-          fetch(`${BACKEND_URL}/api/workflow/beekeeping/sites/outcomes`)
+          apiFetch(`/api/workflow/beekeeping/sites/outcomes`)
             .then(r => r.json()).then(setSitesOutcomes).catch(console.error);
-          fetch(`${BACKEND_URL}/api/workflow/beekeeping`)
+          apiFetch(`/api/workflow/beekeeping`)
             .then(r => r.json()).then(setBeekeepingMetrics).catch(console.error);
         }
         if (tab === 'beekeeping-trainings' && !beekeepingTrainingsOutcomes) {
-          fetch(`${BACKEND_URL}/api/workflow/beekeeping/trainings/outcomes`)
+          apiFetch(`/api/workflow/beekeeping/trainings/outcomes`)
             .then(r => r.json()).then(setBeekeepingTrainingsOutcomes).catch(console.error);
         }
         if (tab === 'beekeeping-status' && !statusOutcomes) {
-          fetch(`${BACKEND_URL}/api/workflow/beekeeping/status/outcomes`)
+          apiFetch(`/api/workflow/beekeeping/status/outcomes`)
             .then(r => r.json()).then(setStatusOutcomes).catch(console.error);
           if (!beekeepingMetrics) {
-            fetch(`${BACKEND_URL}/api/workflow/beekeeping`)
+            apiFetch(`/api/workflow/beekeeping`)
               .then(r => r.json()).then(setBeekeepingMetrics).catch(console.error);
           }
         }
         if (tab === 'verifications-audits' && !verificationsMetrics) {
-          fetch(`${BACKEND_URL}/api/workflow/verifications`)
+          apiFetch(`/api/workflow/verifications`)
             .then(r => r.json()).then(setVerificationsMetrics).catch(console.error);
         }
         if (tab === 'gallery' && (!mediaList.images.length && !mediaList.audios.length)) {
-          fetch(`${BACKEND_URL}/api/media/list`)
+          apiFetch(`/api/media/list`)
             .then(r => r.json()).then(setMediaList).catch(console.error);
         }
         if (tab === 'report') {
           // Report may need multiple datasets — fetch anything not yet loaded
-          if (!survivalOutcomes) fetch(`${BACKEND_URL}/api/workflow/survival/outcomes`).then(r => r.json()).then(setSurvivalOutcomes).catch(console.error);
-          if (!productionOutcomes) fetch(`${BACKEND_URL}/api/workflow/nursery-production/outcomes`).then(r => r.json()).then(setProductionOutcomes).catch(console.error);
-          if (!statusOutcomes) fetch(`${BACKEND_URL}/api/workflow/beekeeping/status/outcomes`).then(r => r.json()).then(setStatusOutcomes).catch(console.error);
-          if (!fireOutcomes) fetch(`${BACKEND_URL}/api/workflow/fire/outcomes`).then(r => r.json()).then(setFireOutcomes).catch(console.error);
+          if (!survivalOutcomes) apiFetch(`/api/workflow/survival/outcomes`).then(r => r.json()).then(setSurvivalOutcomes).catch(console.error);
+          if (!productionOutcomes) apiFetch(`/api/workflow/nursery-production/outcomes`).then(r => r.json()).then(setProductionOutcomes).catch(console.error);
+          if (!statusOutcomes) apiFetch(`/api/workflow/beekeeping/status/outcomes`).then(r => r.json()).then(setStatusOutcomes).catch(console.error);
+          if (!fireOutcomes) apiFetch(`/api/workflow/fire/outcomes`).then(r => r.json()).then(setFireOutcomes).catch(console.error);
         }
       } catch (err) {
         console.error('Tab data load error:', err);
@@ -483,7 +526,7 @@ function App() {
   }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sync data handler — connects to QField Cloud, downloads files, and refreshes state
-  const handleSyncData = () => {
+  const handleSyncData = async () => {
     if (isSyncing) {
       setShowSyncOverlay(true);
       return;
@@ -496,35 +539,34 @@ function App() {
       downloaded: 0,
       skipped: 0,
       total_files: 0,
-      current_file: 'Connecting to Server...',
+      current_file: 'Waking server...',
       errors: [],
       error_count: 0
     });
-    
-    fetch(`${BACKEND_URL}/api/qfieldcloud/sync`, { method: 'POST' })
-      .then(async res => {
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.detail || 'Sync failed');
-        }
-        return data;
-      })
-      .then(data => {
-        startSyncPolling();
-      })
-      .catch(err => {
-        console.error('Server Sync Error:', err);
-        setSyncStatus({
-          status: 'error',
-          downloaded: 0,
-          skipped: 0,
-          total_files: 0,
-          current_file: '',
-          errors: [err.message || 'Failed to start sync'],
-          error_count: 1
-        });
-        setIsSyncing(false);
+
+    try {
+      await apiFetch('/api/health', {}, { retries: 6, timeoutMs: 25000 });
+      setSyncStatus(prev => ({ ...prev, current_file: 'Connecting to QField Cloud...' }));
+      const res = await apiFetch('/api/qfieldcloud/sync', { method: 'POST' }, { retries: 3, timeoutMs: 60000 });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = data.detail;
+        throw new Error(typeof detail === 'string' ? detail : 'Sync failed');
+      }
+      startSyncPolling();
+    } catch (err) {
+      console.error('Server Sync Error:', err);
+      setSyncStatus({
+        status: 'error',
+        downloaded: 0,
+        skipped: 0,
+        total_files: 0,
+        current_file: '',
+        errors: [err.message || 'Failed to start sync'],
+        error_count: 1
       });
+      setIsSyncing(false);
+    }
   };
 
   // Fetch tab layers
@@ -575,7 +617,7 @@ function App() {
         setPrimaryLayerData(cached);
       } else {
         setPrimaryLayerData(null);
-        fetch(`${BACKEND_URL}/api/geojson/${primary}`)
+        apiFetch(`/api/geojson/${primary}`)
           .then(res => res.ok ? res.json() : null)
           .then(data => {
             if (data) {
@@ -595,7 +637,7 @@ function App() {
         setSecondaryLayerData(cached);
       } else {
         setSecondaryLayerData(null);
-        fetch(`${BACKEND_URL}/api/geojson/${secondary}`)
+        apiFetch(`/api/geojson/${secondary}`)
           .then(res => res.ok ? res.json() : null)
           .then(data => {
             if (data) {
@@ -614,7 +656,7 @@ function App() {
   useEffect(() => {
     if (activeTab === 'explorer') {
       setExplorerData([]);
-      fetch(`${BACKEND_URL}/api/geojson/${explorerTarget}`)
+      apiFetch(`/api/geojson/${explorerTarget}`)
         .then(res => res.json())
         .then(data => {
           if (data && data.features) {
@@ -634,7 +676,7 @@ function App() {
   // Fetch media list when gallery tab becomes active
   useEffect(() => {
     if (activeTab === 'gallery') {
-      fetch(`${BACKEND_URL}/api/media/list`)
+      apiFetch(`/api/media/list`)
         .then(res => res.json())
         .then(data => setMediaList(data))
         .catch(console.error);
@@ -10169,7 +10211,7 @@ function App() {
               <button 
                 onClick={async () => {
                   try {
-                    const saveRes = await fetch(`${BACKEND_URL}/api/qfieldcloud/config`, {
+                    const saveRes = await apiFetch(`/api/qfieldcloud/config`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({
@@ -10205,7 +10247,7 @@ function App() {
                 onClick={async () => {
                   try {
                     // Save first
-                    const saveRes = await fetch(`${BACKEND_URL}/api/qfieldcloud/config`, {
+                    const saveRes = await apiFetch(`/api/qfieldcloud/config`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({

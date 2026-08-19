@@ -1,6 +1,5 @@
 services:
-  # 1. FastAPI Python Backend (web service)
-  #    Kafka consumer runs as a background thread INSIDE this service — no extra worker needed.
+  # FastAPI backend on Render free. Kafka is off. Postgres = Supabase DATABASE_URL.
   - type: web
     name: mytrees-qfield-backend
     env: python
@@ -13,22 +12,22 @@ services:
         value: /tmp/MyTrees
       - key: PYTHON_VERSION
         value: 3.10.0
-
-      # ── QField Cloud ─────────────────────────────────────────────────────
       - key: QFIELD_URL
         value: https://app.qfield.cloud/api/v1/
-
-      # ── Aiven Kafka (SSL) ─────────────────────────────────────────────────
-      # KAFKA_CA_CERT, KAFKA_ACCESS_CERT, KAFKA_ACCESS_KEY → Render Secret Files
-      - key: KAFKA_BOOTSTRAP_SERVERS
-        value: kafka-3c7118d1-mytrees2026.f.aivencloud.com:15263
-
-      # ── Aiven PostgreSQL ──────────────────────────────────────────────────
-      # Set DATABASE_URL in Render Dashboard → Environment → Add Secret
+      # Supabase: Dashboard → Project Settings → Database → Connection string (URI)
+      # Use the "direct" host on port 5432, then set this as a secret in Render.
       - key: DATABASE_URL
         sync: false
+      - key: QFIELD_USERNAME
+        sync: false
+      - key: QFIELD_PASSWORD
+        sync: false
+      - key: QFIELD_PROJECT_ID
+        sync: false
+      - key: QFIELD_TOKEN
+        sync: false
 
-  # 2. Static Site Frontend
+  # Optional: keep Render static hosting as a backup. Primary UI is Firebase Hosting.
   - type: web
     name: mytrees-qfield-frontend
     env: static
